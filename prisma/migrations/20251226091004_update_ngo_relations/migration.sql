@@ -1,0 +1,8 @@
+-- AlterTable
+ALTER TABLE "ngos" ADD COLUMN     "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;
+
+-- AlterTable
+ALTER TABLE "users" ADD COLUMN     "ngoId" TEXT;
+
+-- AddForeignKey
+ALTER TABLE "users" ADD CONSTRAINT "users_ngoId_fkey" FOREIGN KEY ("ngoId") REFERENCES "ngos"("id") ON DELETE SET NULL ON UPDATE CASCADE;

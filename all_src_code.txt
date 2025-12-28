@@ -1,0 +1,5735 @@
+src/actions/authActions.ts
+========================================
+FILE: src/actions/authActions.ts
+========================================
+// src/actions/authActions.ts
+"use server";
+
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+
+export async function logout() {
+  const cookieStore = await cookies();
+  cookieStore.delete("auth-token");
+
+  // This line sends the user to home with a query parameter
+  redirect("/?loggedout=true");
+}
+
+
+src/actions/eventActions.ts
+========================================
+FILE: src/actions/eventActions.ts
+========================================
+// src/actions/eventActions.ts
+"use server";
+
+import { prisma } from "@/lib/prisma";
+import { revalidatePath } from "next/cache";
+import { cookies } from "next/headers";
+
+async function getCurrentUser() {
+  const token = (await cookies()).get("auth-token")?.value;
+
+  if (!token) return null;
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    return { 
+      id: payload.userId, 
+      role: payload.role, 
+      schoolId: payload.schoolId || null 
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function createEvent(formData: FormData) {
+  const user = await getCurrentUser();
+
+  if (!user || user.role !== "SCHOOL" || !user.schoolId) {
+    return { success: false, error: "Unauthorized or no school linked" };
+  }
+
+  const name = formData.get("name") as string;
+  const type = formData.get("type") as "SELL" | "DONATION";
+  const date = new Date(formData.get("date") as string);
+  const ngoId = type === "DONATION" ? (formData.get("ngoId") as string || null) : null;
+
+  if (!name || !type || isNaN(date.getTime())) {
+    return { success: false, error: "Invalid input" };
+  }
+
+  try {
+    await prisma.event.create({
+      data: {
+        name,
+        type,
+        date,
+        ngoId,
+        schoolId: user.schoolId,
+      },
+    });
+
+    revalidatePath("/ecochamp/school/events");
+    revalidatePath("/ecochamp/school");
+
+    return { success: true };
+  } catch (error) {
+    console.error("Event creation error:", error);
+    return { success: false, error: "Failed to create event" };
+  }
+}
+
+
+src/actions/orderActions.ts
+========================================
+FILE: src/actions/orderActions.ts
+========================================
+// src/actions/orderActions.ts
+"use server";
+
+import { prisma } from "@/lib/prisma";
+import { revalidatePath } from "next/cache";
+
+export async function createSellOrder(formData: FormData) {
+  try {
+    const contactName = formData.get("contactName") as string;
+    const contactPhone = formData.get("contactPhone") as string;
+    const pickupAddress = formData.get("pickupAddress") as string;
+    const pickupDate = new Date(formData.get("pickupDate") as string);
+    const eventId = formData.get("eventId") as string | null; // â† From form (optional)
+
+    const items: { itemId: string; quantity: number }[] = [];
+    const entries = Array.from(formData.entries());
+    const temp: any = {};
+    for (const [key, value] of entries) {
+      const match = key.match(/items\[(\d+)\]\[(\w+)\]/);
+      if (match) {
+        const index = match[1];
+        const field = match[2];
+        if (!temp[index]) temp[index] = {};
+        temp[index][field] = value;
+      }
+    }
+    Object.values(temp).forEach((i: any) => {
+      items.push({
+        itemId: i.itemId,
+        quantity: Number(i.quantity),
+      });
+    });
+
+    if (items.length === 0) {
+      return { success: false, error: "No items selected" };
+    }
+
+    const order = await prisma.order.create({
+      data: {
+        type: "SELL",
+        status: "CREATED",
+        publicId: "SS" + Math.random().toString(36).substring(2, 10).toUpperCase(),
+        pickupAddress,
+        pickupDate,
+        contactName,
+        contactPhone,
+        eventId: eventId || null, // â† Save eventId for participation
+        items: {
+          create: items.map((i) => ({
+            estimatedQty: i.quantity,
+            scrapItem: { connect: { id: i.itemId } },
+          })),
+        },
+      },
+    });
+
+    revalidatePath("/admin");
+
+    return { success: true, publicId: order.publicId };
+  } catch (error) {
+    console.error("Create sell order error:", error);
+    return { success: false, error: "Failed to create order" };
+  }
+}
+
+export async function createDonateOrder(formData: FormData) {
+  try {
+    const ngoId = formData.get("ngoId") as string;
+    const contactName = formData.get("contactName") as string;
+    const contactPhone = formData.get("contactPhone") as string;
+    const pickupAddress = formData.get("pickupAddress") as string;
+    const pickupDate = new Date(formData.get("pickupDate") as string);
+    const eventId = formData.get("eventId") as string | null; // â† From form (optional)
+
+    const items: { itemId: string; quantity: number }[] = [];
+    const entries = Array.from(formData.entries());
+    const temp: any = {};
+    for (const [key, value] of entries) {
+      const match = key.match(/items\[(\d+)\]\[(\w+)\]/);
+      if (match) {
+        const index = match[1];
+        const field = match[2];
+        if (!temp[index]) temp[index] = {};
+        temp[index][field] = value;
+      }
+    }
+    Object.values(temp).forEach((i: any) => {
+      items.push({
+        itemId: i.itemId,
+        quantity: Number(i.quantity),
+      });
+    });
+
+    if (items.length === 0) {
+      return { success: false, error: "No items selected" };
+    }
+
+    const order = await prisma.order.create({
+      data: {
+        type: "DONATION",
+        status: "CREATED",
+        publicId: "DS" + Math.random().toString(36).substring(2, 10).toUpperCase(),
+        pickupAddress,
+        pickupDate,
+        contactName,
+        contactPhone,
+        ngoId,
+        eventId: eventId || null, // â† Save eventId for participation
+        items: {
+          create: items.map((i) => ({
+            estimatedQty: i.quantity,
+            scrapItem: { connect: { id: i.itemId } },
+          })),
+        },
+      },
+    });
+
+    revalidatePath("/admin");
+
+    return { success: true, publicId: order.publicId };
+  } catch (error) {
+    console.error("Create donate order error:", error);
+    return { success: false, error: "Failed to create donation order" };
+  }
+}
+
+
+src/app/admin/ecochamp/page.tsx
+========================================
+FILE: src/app/admin/ecochamp/page.tsx
+========================================
+// src/app/admin/ecochamp/page.tsx
+import { prisma } from "@/lib/prisma";
+import AdminEventList from "@/components/AdminEventList";
+
+async function getEvents() {
+  return prisma.event.findMany({
+    include: {
+      school: true,
+      ngo: true,
+      orders: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+export default async function AdminEcoChampPage() {
+  const events = await getEvents();
+
+  return (
+    <div className="max-w-6xl mx-auto">
+      <h1 className="text-3xl font-bold text-gray-800 mb-8">EcoChamp Event Management</h1>
+
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <h2 className="text-2xl font-semibold mb-6">All Events</h2>
+        <AdminEventList events={events} />
+      </div>
+    </div>
+  );
+}
+
+
+src/app/admin/ngos/page.tsx
+========================================
+FILE: src/app/admin/ngos/page.tsx
+========================================
+// src/app/admin/ngos/page.tsx
+export const dynamic = "force-dynamic";
+
+import { prisma } from "@/lib/prisma";
+import NGOList from "@/components/NGOList";
+import CreateNGOButton from "@/components/CreateNGOButton";
+
+async function getNGOs() {
+  return prisma.nGO.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+export default async function AdminNGOsPage() {
+  const ngos = await getNGOs();
+
+  return (
+    <div className="max-w-6xl mx-auto py-12 px-4">
+      <div className="flex justify-between items-center mb-8">
+        <h1 className="text-4xl font-bold text-green-700">Manage NGOs</h1>
+        <CreateNGOButton />
+      </div>
+
+      <div>
+        <h2 className="text-2xl font-bold mb-6">All NGOs ({ngos.length})</h2>
+        {ngos.length === 0 ? (
+          <p className="text-center text-gray-600 py-8 bg-white rounded-lg shadow">
+            No NGOs yet. Click "Create New NGO" to add one!
+          </p>
+        ) : (
+          <NGOList initialNGOs={ngos} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+src/app/admin/page.tsx
+========================================
+FILE: src/app/admin/page.tsx
+========================================
+// src/app/admin/page.tsx
+import Link from "next/link";
+
+export default function AdminDashboard() {
+  return (
+    <div className="max-w-6xl mx-auto">
+      <h1 className="text-4xl font-bold text-gray-800 mb-8">Admin Control Tower</h1>
+      
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <Link href="/admin/scrap-items" className="block p-6 bg-white rounded-lg shadow hover:shadow-lg transition">
+          <h2 className="text-2xl font-semibold mb-2">Scrap Items & Pricing</h2>
+          <p className="text-gray-600">Manage what can be collected and base prices</p>
+        </Link>
+        <Link href="/admin/ngos" className="block p-6 bg-white rounded-lg shadow hover:shadow-lg transition">
+  <h2 className="text-2xl font-semibold mb-2">NGOs</h2>
+  <p className="text-gray-600">Manage verified recipient NGOs</p>
+</Link>
+<Link href="/admin/vehicle" className="block p-6 bg-white rounded-lg shadow hover:shadow-lg transition">
+  <h2 className="text-2xl font-semibold mb-2">Vehicle Scrap Leads</h2>
+  <p className="text-gray-600">Manage high-value vehicle collection leads</p>
+</Link>
+<Link href="/admin/schools" className="block p-6 bg-white rounded-lg shadow hover:shadow-lg transition">
+  <h2 className="text-2xl font-semibold mb-2">Schools (EcoChamp)</h2>
+  <p className="text-gray-600">Onboard and manage participating schools</p>
+</Link>
+<Link href="/admin/ecochamp" className="block p-6 bg-white rounded-lg shadow hover:shadow-lg transition">
+  <h2 className="text-2xl font-semibold mb-2">EcoChamp Events</h2>
+  <p className="text-gray-600">Manage school events and issue certificates</p>
+</Link>
+        <div className="p-6 bg-white rounded-lg shadow opacity-50">
+          <h2 className="text-2xl font-semibold mb-2">Orders</h2>
+          <p className="text-gray-600">Coming soon</p>
+        </div>
+
+        <div className="p-6 bg-white rounded-lg shadow opacity-50">
+          <h2 className="text-2xl font-semibold mb-2">Reps Management</h2>
+          <p className="text-gray-600">Coming soon</p>
+        </div>
+
+        <div className="p-6 bg-white rounded-lg shadow opacity-50">
+          <h2 className="text-2xl font-semibold mb-2">NGOs</h2>
+          <p className="text-gray-600">Coming soon</p>
+        </div>
+
+        <div className="p-6 bg-white rounded-lg shadow opacity-50">
+          <h2 className="text-2xl font-semibold mb-2">Schools & Events</h2>
+          <p className="text-gray-600">Coming soon</p>
+        </div>
+
+        <div className="p-6 bg-white rounded-lg shadow opacity-50">
+          <h2 className="text-2xl font-semibold mb-2">Reports</h2>
+          <p className="text-gray-600">Coming soon</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+src/app/admin/reps/page.tsx
+========================================
+FILE: src/app/admin/reps/page.tsx
+========================================
+// src/app/admin/reps/page.tsx
+export const dynamic = "force-dynamic";
+
+import { prisma } from "@/lib/prisma";
+import RepForm from "@/components/RepForm";
+
+async function getReps() {
+  return prisma.user.findMany({
+    where: { role: "REP" },
+    select: { id: true, name: true, email: true, phone: true },
+  });
+}
+
+export default async function AdminRepsPage() {
+  const reps = await getReps();
+
+  return (
+    <div className="max-w-6xl mx-auto py-12">
+      <h1 className="text-4xl font-bold text-green-700 mb-8 text-center">
+        Manage Field Reps
+      </h1>
+
+      <div className="mb-12">
+        <h2 className="text-2xl font-bold mb-6">Add New Rep</h2>
+        <RepForm />
+      </div>
+
+      <h2 className="text-2xl font-bold mb-6">Current Reps</h2>
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
+        {reps.map((rep) => (
+          <div key={rep.id} className="bg-white rounded-lg shadow p-6">
+            <h3 className="text-xl font-bold">{rep.name}</h3>
+            <p className="text-gray-600">{rep.email}</p>
+            <p className="text-gray-600">{rep.phone}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+
+src/app/admin/schools/page.tsx
+========================================
+FILE: src/app/admin/schools/page.tsx
+========================================
+// src/app/admin/schools/page.tsx
+import { prisma } from "@/lib/prisma";
+import SchoolForm from "@/components/SchoolForm";
+import SchoolList from "@/components/SchoolList";
+
+async function getSchools() {
+  return prisma.school.findMany({
+    include: {
+      users: {
+        where: { role: "SCHOOL" },
+        select: { email: true, name: true }, // add name for better display
+      },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+export default async function SchoolsAdminPage() {
+  const schools = await getSchools();
+
+  return (
+    <div className="max-w-6xl mx-auto">
+      <h1 className="text-3xl font-bold text-gray-800 mb-8">School Management (EcoChamp)</h1>
+
+      <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
+        <h2 className="text-2xl font-semibold mb-4">Add New School</h2>
+        <SchoolForm />
+      </div>
+
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <h2 className="text-2xl font-semibold mb-4">Registered Schools</h2>
+        <SchoolList initialSchools={schools} />
+      </div>
+    </div>
+  );
+}
+
+
+src/app/admin/scrap-items/page.tsx
+========================================
+FILE: src/app/admin/scrap-items/page.tsx
+========================================
+// src/app/admin/scrap-items/page.tsx
+import { prisma } from "@/lib/prisma";
+import ScrapItemForm from "@/components/ScrapItemForm";
+import ScrapItemList from "@/components/ScrapItemList";
+
+async function getScrapItems() {
+  return prisma.scrapItem.findMany({
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+export default async function ScrapItemsPage() {
+  const items = await getScrapItems();
+
+  return (
+    <div className="max-w-4xl mx-auto">
+      <h1 className="text-3xl font-bold text-gray-800 mb-8">Scrap Items & Pricing</h1>
+      
+      <div className="bg-white rounded-lg shadow-lg p-6 mb-8">
+        <h2 className="text-2xl font-semibold mb-4">Add New Scrap Item</h2>
+        <ScrapItemForm />
+      </div>
+
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <h2 className="text-2xl font-semibold mb-4">Current Items</h2>
+        <ScrapItemList initialItems={items} />
+      </div>
+    </div>
+  );
+}
+
+
+src/app/admin/vehicle/page.tsx
+========================================
+FILE: src/app/admin/vehicle/page.tsx
+========================================
+// src/app/admin/vehicle/page.tsx
+import { prisma } from "@/lib/prisma";
+import VehicleLeadList from "@/components/VehicleLeadList";
+
+async function getLeads() {
+  return prisma.vehicleScrap.findMany({
+    include: {
+      rep: true,
+    },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+async function getReps() {
+  return prisma.user.findMany({
+    where: { role: "REP" },
+    select: { id: true, name: true, email: true },
+  });
+}
+
+export default async function VehicleAdminPage() {
+  const [leads, reps] = await Promise.all([getLeads(), getReps()]);
+
+  return (
+    <div className="max-w-6xl mx-auto">
+      <h1 className="text-3xl font-bold text-gray-800 mb-8">Vehicle Scrap Leads</h1>
+
+      <div className="bg-white rounded-lg shadow-lg overflow-hidden">
+        <VehicleLeadList initialLeads={leads} reps={reps} />
+      </div>
+    </div>
+  );
+}
+
+
+src/app/api/auth/login/route.ts
+========================================
+FILE: src/app/api/auth/login/route.ts
+========================================
+// src/app/api/auth/login/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { comparePassword, signToken } from "@/lib/auth";
+
+export async function POST(req: NextRequest) {
+  try {
+    const { email, password } = await req.json();
+
+    if (!email || !password) {
+      return NextResponse.json({ error: "Missing credentials" }, { status: 400 });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { email },
+      select: { 
+        id: true, 
+        email: true, 
+        name: true, 
+        role: true,
+        schoolId: true,
+        password: true,  // Needed for comparison
+      },
+    });
+
+    if (!user || !(await comparePassword(password, user.password))) {
+      return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
+    }
+
+    // Include schoolId in token
+    const token = signToken({
+      userId: user.id,
+      role: user.role,
+      schoolId: user.schoolId || null,
+    });
+
+    const response = NextResponse.json({
+      message: "Logged in",
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        role: user.role, 
+        name: user.name,
+      },
+    });
+
+    response.cookies.set("auth-token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 30 * 24 * 60 * 60,
+      path: "/",
+    });
+
+    return response;
+  } catch (error) {
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
+
+
+src/app/api/auth/logout/route.ts
+========================================
+FILE: src/app/api/auth/logout/route.ts
+========================================
+// src/app/api/auth/logout/route.ts
+import { NextRequest, NextResponse } from "next/server";
+
+export async function POST(req: NextRequest) {
+  const response = NextResponse.json({ message: "Logged out" });
+  response.cookies.delete("auth-token");
+  return response;
+}
+
+
+src/app/api/auth/me/route.ts
+========================================
+FILE: src/app/api/auth/me/route.ts
+========================================
+// src/app/api/auth/me/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { PrismaClient } from "@prisma/client";
+import { verifyToken } from "@/lib/auth";
+import { prisma } from '@/lib/prisma';
+
+export async function GET(req: NextRequest) {
+  const token = req.cookies.get("auth-token")?.value;
+
+  if (!token) {
+    return NextResponse.json({ user: null, role: "GUEST" });
+  }
+
+  const payload = verifyToken(token);
+  if (!payload) {
+    return NextResponse.json({ user: null, role: "GUEST" });
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { id: payload.userId },
+    select: { id: true, email: true, name: true, phone: true, role: true },
+  });
+
+  if (!user) {
+    return NextResponse.json({ user: null, role: "GUEST" });
+  }
+
+  return NextResponse.json({ user, role: user.role });
+}
+
+
+src/app/api/auth/register/route.ts
+========================================
+FILE: src/app/api/auth/register/route.ts
+========================================
+// src/app/api/auth/register/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { PrismaClient } from "@prisma/client";
+import { hashPassword } from "@/lib/auth";
+import { prisma } from '@/lib/prisma';
+
+export async function POST(req: NextRequest) {
+  try {
+    const { email, password, name, phone, role } = await req.json();
+
+    if (!email || !password) {
+      return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    }
+
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) {
+      return NextResponse.json({ error: "Email taken" }, { status: 400 });
+    }
+
+    const hashed = await hashPassword(password);
+
+    // Only allow ADMIN creation via seed for now
+    const allowedRoles = role === "ADMIN" ? ["ADMIN"] : ["REP", "SCHOOL", "STUDENT"];
+    if (!allowedRoles.includes(role || "")) {
+      return NextResponse.json({ error: "Invalid role" }, { status: 400 });
+    }
+
+    const user = await prisma.user.create({
+      data: {
+        email,
+        password: hashed,
+        name,
+        phone,
+        role: role || "STUDENT",
+      },
+    });
+
+    return NextResponse.json({ message: "User created", userId: user.id });
+  } catch (error) {
+    return NextResponse.json({ error: "Server error" }, { status: 500 });
+  }
+}
+
+
+src/app/api/ecochamp/join-event/route.ts
+========================================
+FILE: src/app/api/ecochamp/join-event/route.ts
+========================================
+// src/app/api/ecochamp/join-event/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+
+async function getCurrentUserId(req: NextRequest) {
+  const token = req.cookies.get("auth-token")?.value;
+  if (!token) return null;
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    return payload.role === "STUDENT" ? payload.userId : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function POST(req: NextRequest) {
+  const studentId = await getCurrentUserId(req);
+  if (!studentId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { eventId } = await req.json();
+
+  try {
+    await prisma.participation.upsert({
+      where: { studentId_eventId: { studentId, eventId } },
+      update: {},
+      create: { studentId, eventId },
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    return NextResponse.json({ error: "Failed to join" }, { status: 500 });
+  }
+}
+
+
+src/app/api/ecochamp/student/register/route.ts
+========================================
+FILE: src/app/api/ecochamp/student/register/route.ts
+========================================
+// src/app/api/ecochamp/student/register/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { hashPassword } from "@/lib/auth";
+
+export async function POST(req: NextRequest) {
+  try {
+    const formData = await req.formData();
+
+    const name = formData.get("name") as string;
+    const email = formData.get("email") as string;
+    const password = formData.get("password") as string;
+    const code = formData.get("code") as string;
+
+    const school = await prisma.school.findUnique({
+      where: { code },
+    });
+
+    if (!school) {
+      return NextResponse.json({ error: "Invalid school code" }, { status: 400 });
+    }
+
+    const hashed = await hashPassword(password);
+
+    await prisma.user.create({
+      data: {
+        name,
+        email,
+        password: hashed,
+        role: "STUDENT",
+        schoolId: school.id,
+      },
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    if (error.code === "P2002") {
+      return NextResponse.json({ error: "Email already registered" }, { status: 400 });
+    }
+    return NextResponse.json({ error: "Registration failed" }, { status: 500 });
+  }
+}
+
+
+src/app/api/ecochamp/validate-code/route.ts
+========================================
+FILE: src/app/api/ecochamp/validate-code/route.ts
+========================================
+// src/app/api/ecochamp/validate-code/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+
+export async function POST(req: NextRequest) {
+  const { code } = await req.json();
+
+  const school = await prisma.school.findUnique({
+    where: { code },
+    select: { name: true },
+  });
+
+  if (school) {
+    return NextResponse.json({ valid: true, schoolName: school.name });
+  }
+
+  return NextResponse.json({ valid: false }, { status: 404 });
+}
+
+
+src/app/api/ngo/register/route.ts
+========================================
+FILE: src/app/api/ngo/register/route.ts
+========================================
+// src/app/api/ngo/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { hashPassword } from "@/lib/auth";
+
+export async function POST(req: NextRequest) {
+  try {
+    const formData = await req.formData();
+
+    const name = formData.get("name") as string;
+    const description = formData.get("description") as string;
+    const logo = formData.get("logo") as string | null;
+    const website = formData.get("website") as string | null;
+    const registrationNumber = formData.get("registrationNumber") as string;
+    const type = formData.get("type") as "TRUST" | "SOCIETY" | "FOUNDATION" | "OTHER";
+    const address = formData.get("address") as string;
+    const email = formData.get("email") as string;
+    const phone = formData.get("phone") as string;
+    const password = formData.get("password") as string;
+
+    if (!name || !description || !registrationNumber || !type || !address || !email || !phone || !password) {
+      return NextResponse.json({ error: "Missing required fields" }, { status: 400 });
+    }
+
+    // Create NGO (pending)
+    const ngo = await prisma.nGO.create({
+      data: {
+        name,
+        slug: name.toLowerCase().replace(/\s+/g, "-") + "-" + Date.now(),
+        description,
+        logo: logo || null,
+        website: website || null,
+        registrationNumber,
+        type,
+        address,
+        status: "PENDING",
+      },
+    });
+
+    // Create NGO user
+    const hashed = await hashPassword(password);
+
+    await prisma.user.create({
+      data: {
+        email,
+        password: hashed,
+        name,
+        phone,
+        role: "NGO",
+        ngoId: ngo.id,
+      },
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    console.error("NGO create error:", error);
+    if (error.code === "P2002") {
+      return NextResponse.json({ error: "Email or NGO name already exists" }, { status: 400 });
+    }
+    return NextResponse.json({ error: "Failed to create NGO" }, { status: 500 });
+  }
+}
+
+
+src/app/api/rep/create/route.ts
+========================================
+FILE: src/app/api/rep/create/route.ts
+========================================
+// src/app/api/rep/create/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+import { hashPassword } from "@/lib/auth";
+
+export async function POST(req: NextRequest) {
+  try {
+    const formData = await req.formData();
+
+    const name = formData.get("name") as string;
+    const email = formData.get("email") as string;
+    const phone = formData.get("phone") as string;
+    const password = formData.get("password") as string;
+
+    if (!name || !email || !phone || !password) {
+      return NextResponse.json({ error: "Missing fields" }, { status: 400 });
+    }
+
+    const hashed = await hashPassword(password);
+
+    await prisma.user.create({
+      data: {
+        name,
+        email,
+        phone,
+        password: hashed,
+        role: "REP",
+      },
+    });
+
+    return NextResponse.json({ success: true });
+  } catch (error: any) {
+    if (error.code === "P2002") {
+      return NextResponse.json({ error: "Email already exists" }, { status: 400 });
+    }
+    return NextResponse.json({ error: "Failed" }, { status: 500 });
+  }
+}
+
+
+src/app/api/vehicle/submit/route.ts
+========================================
+FILE: src/app/api/vehicle/submit/route.ts
+========================================
+// src/app/api/vehicle/submit/route.ts
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/prisma";
+
+export async function POST(req: NextRequest) {
+  try {
+    const formData = await req.formData();
+
+    const make = formData.get("make") as string;
+    const model = formData.get("model") as string;
+    const year = Number(formData.get("year"));
+    const condition = formData.get("condition") as string;
+    const phone = formData.get("phone") as string;
+    const location = formData.get("location") as string;
+    const notes = formData.get("notes") as string;
+
+    const lead = await prisma.vehicleScrap.create({
+      data: {
+        make,
+        model,
+        year,
+        condition,
+        phone,
+        location,
+        notes: notes || null,
+        publicId: "VH" + Math.random().toString(36).substring(2, 8).toUpperCase(),
+      },
+    });
+
+    return NextResponse.json({ success: true, publicId: lead.publicId });
+  } catch (error) {
+    console.error(error);
+    return NextResponse.json({ success: false }, { status: 500 });
+  }
+}
+
+
+src/app/donate/page.tsx
+========================================
+FILE: src/app/donate/page.tsx
+========================================
+// src/app/donate/page.tsx
+import { prisma } from "@/lib/prisma";
+import DonateScrapForm from "@/components/DonateScrapForm";
+
+async function getData() {
+  const [items, ngos] = await Promise.all([
+    prisma.scrapItem.findMany({
+      where: { active: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.nGO.findMany({
+      where: { status: "APPROVED" },
+      orderBy: { name: "asc" },
+    }),
+  ]);
+
+  const plainItems = items.map((item) => ({
+    id: item.id,
+    name: item.name,
+    unit: item.unit,
+    basePrice: Number(item.basePrice), // â† Convert Decimal to number
+  }));
+
+  return { items: plainItems, ngos };
+}
+
+export default async function DonatePage() {
+  const { items, ngos } = await getData();
+
+  return (
+    <div className="max-w-4xl mx-auto py-12">
+      <h1 className="text-4xl font-bold text-green-700 mb-8 text-center">
+        Donate Scrap to NGO
+      </h1>
+
+      <DonateScrapForm items={items} ngos={ngos} />
+    </div>
+  );
+}
+
+
+src/app/donate/success/page.tsx
+========================================
+FILE: src/app/donate/success/page.tsx
+========================================
+// src/app/donate/success/page.tsx
+import Link from "next/link";
+import { prisma } from "@/lib/prisma";
+
+export default async function DonateSuccessPage({
+  searchParams,
+}: {
+  searchParams: { trackingId: string; ngo: string };
+}) {
+  const trackingId = searchParams.trackingId || "unknown";
+  const ngoId = searchParams.ngo;
+
+  const ngo = ngoId ? await prisma.nGO.findUnique({ where: { id: ngoId } }) : null;
+
+  return (
+    <div className="max-w-2xl mx-auto text-center py-20">
+      <div className="bg-green-100 rounded-full w-20 h-20 mx-auto mb-8 flex items-center justify-center">
+        <span className="text-4xl">âœ“</span>
+      </div>
+
+      <h1 className="text-4xl font-bold text-gray-800 mb-6">
+        Donation Request Received!
+      </h1>
+
+      <p className="text-xl text-gray-600 mb-4">
+        Your tracking ID: <span className="font-bold text-green-700">{trackingId}</span>
+      </p>
+
+      {ngo && (
+        <p className="text-lg text-gray-700 mb-8">
+          Your scrap will be donated to: <span className="font-bold">{ngo.name}</span>
+        </p>
+      )}
+
+      <p className="text-gray-600 mb-10">
+        Thank you for helping the community! Our rep will contact you for pickup.
+      </p>
+
+      <Link
+        href="/track"
+        className="inline-block bg-green-600 text-white px-8 py-4 rounded-lg text-lg font-semibold hover:bg-green-700"
+      >
+        Track Your Donation
+      </Link>
+
+      <div className="mt-10">
+        <Link href="/" className="text-blue-600 hover:underline">
+          â† Back to Home
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+
+src/app/ecochamp/event/[id]/page.tsx
+========================================
+FILE: src/app/ecochamp/event/[id]/page.tsx
+========================================
+// src/app/ecochamp/event/[id]/page.tsx
+export const dynamic = "force-dynamic";
+
+import { prisma } from "@/lib/prisma";
+import { cookies } from "next/headers";
+import JoinEventButton from "@/components/JoinEventButton";
+
+async function getEvent(id: string) {
+  return prisma.event.findUnique({
+    where: { id },
+    include: { ngo: true, school: true },
+  });
+}
+
+async function getCurrentStudentId() {
+  const token = (await cookies()).get("auth-token")?.value;
+  if (!token) return null;
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    if (payload.role !== "STUDENT") return null;
+    return payload.userId;
+  } catch {
+    return null;
+  }
+}
+
+async function isJoined(studentId: string | null, eventId: string) {
+  if (!studentId) return false;
+  const participation = await prisma.participation.findUnique({
+    where: { studentId_eventId: { studentId, eventId } },
+  });
+  return !!participation;
+}
+
+export default async function EventDetailsPage({ params }: { params: { id: string } }) {
+  const event = await getEvent(params.id);
+  const studentId = await getCurrentStudentId();
+  const joined = await isJoined(studentId, params.id);
+
+  if (!event) {
+    return <p className="text-center py-12 text-red-600">Event not found</p>;
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto py-12">
+      <h1 className="text-4xl font-bold text-green-700 mb-8">{event.name}</h1>
+
+      <div className="bg-white rounded-lg shadow-lg p-8 space-y-6">
+        <p><strong>Type:</strong> {event.type}</p>
+        <p><strong>Date:</strong> {event.date ? new Date(event.date).toLocaleDateString() : "TBD"}</p>
+        <p><strong>School:</strong> {event.school.name}</p>
+        {event.ngo && <p><strong>NGO:</strong> {event.ngo.name}</p>}
+        <p><strong>Status:</strong> {event.status}</p>
+
+        <p className="text-lg text-gray-700">
+          Bring your scrap to school on event day. No individual pickup needed â€” we collect in bulk!
+        </p>
+
+        {studentId && event.status === "ONGOING" && (
+          <JoinEventButton eventId={event.id} joined={joined} />
+        )}
+
+        {joined && <p className="text-green-600 font-bold text-center">You are participating! Bring your scrap on event day.</p>}
+      </div>
+
+      <a href="/ecochamp/student/upcoming" className="block text-center text-blue-600 hover:underline mt-8">
+        â† Back to Upcoming Events
+      </a>
+    </div>
+  );
+}
+
+
+src/app/ecochamp/login/page.tsx
+========================================
+FILE: src/app/ecochamp/login/page.tsx
+========================================
+// src/app/ecochamp/login/page.tsx
+"use client";
+
+import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { toast } from "react-toastify";
+
+export default function EcoChampLogin() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const registered = searchParams.get("registered");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+    setError("");
+
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+      credentials: "include",
+    });
+
+    if (res.ok) {
+  toast.success("Login successful!");
+  const data = await res.json();
+  const role = data.user.role;
+
+  if (role === "SCHOOL") {
+    router.push("/ecochamp/school"); // Dashboard with buttons
+  } else if (role === "STUDENT") {
+    router.push("/ecochamp/student");
+  } else {
+    router.push("/");
+  }
+}
+  }
+
+  return (
+    <div className="max-w-md mx-auto mt-20">
+      <div className="bg-white rounded-lg shadow-lg p-8">
+        <h1 className="text-3xl font-bold text-center mb-8">EcoChamp Login</h1>
+
+        {registered && (
+          <p className="text-green-600 text-center mb-6 font-medium">
+            Registration successful! Please log in.
+          </p>
+        )}
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email"
+            required
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            required
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-green-600 text-white py-4 rounded-lg text-xl font-semibold hover:bg-green-700 disabled:bg-gray-400"
+          >
+            {loading ? "Logging in..." : "Login"}
+          </button>
+        </form>
+
+        {error && <p className="text-red-600 text-center mt-4">{error}</p>}
+
+        <div className="mt-8 text-center">
+          <a href="/ecochamp" className="text-blue-600 hover:underline">
+            â† Back to EcoChamp Home
+          </a>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+src/app/ecochamp/school/create-event/page.tsx
+========================================
+FILE: src/app/ecochamp/school/create-event/page.tsx
+========================================
+// src/app/ecochamp/school/create-event/page.tsx
+import { prisma } from "@/lib/prisma";
+import EventForm from "@/components/EventForm";
+
+async function getNGOs() {
+  return prisma.nGO.findMany({
+    where: { status: "APPROVED" },  // â† Changed from active: true
+    orderBy: { name: "asc" },
+  });
+}
+
+export default async function CreateEventPage() {
+  const ngos = await getNGOs();
+
+  return (
+    <div className="max-w-2xl mx-auto py-12">
+      <h1 className="text-3xl font-bold text-gray-800 mb-8">Create New Event</h1>
+      <EventForm ngos={ngos} />
+    </div>
+  );
+}
+
+
+src/app/ecochamp/school/events/page.tsx
+========================================
+FILE: src/app/ecochamp/school/events/page.tsx
+========================================
+// src/app/ecochamp/school/events/page.tsx
+export const dynamic = "force-dynamic";
+
+import { prisma } from "@/lib/prisma";
+import SchoolEventList from "@/components/SchoolEventList";
+
+async function getEvents() {
+  return prisma.event.findMany({
+    include: {
+      ngo: true,
+      orders: true,
+      school: true,  // â† Added this line
+    },
+    orderBy: {
+      date: "desc",
+    },
+  });
+}
+
+export default async function SchoolEventsPage() {
+  const events = await getEvents();
+
+  return (
+    <div className="max-w-6xl mx-auto py-12">
+      <h1 className="text-4xl font-bold text-green-700 mb-8 text-center">
+        Your EcoChamp Events
+      </h1>
+
+      <SchoolEventList events={events} />
+    </div>
+  );
+}
+
+
+src/app/ecochamp/school/page.tsx
+========================================
+FILE: src/app/ecochamp/school/page.tsx
+========================================
+// src/app/ecochamp/school/page.tsx
+export const dynamic = "force-dynamic";
+import { prisma } from "@/lib/prisma";
+import EventForm from "@/components/EventForm";
+import SchoolEventList from "@/components/SchoolEventList";
+import Link from "next/link";
+
+
+async function getData() {
+  const [events, ngos] = await Promise.all([
+    prisma.event.findMany({
+      include: {
+        ngo: true,
+        orders: true,
+      },
+      orderBy: {
+        createdAt: "desc",
+      },
+    }),
+    prisma.nGO.findMany({
+      where: { status: "APPROVED" },
+      orderBy: { name: "asc" },
+    }),
+  ]);
+
+  return { events, ngos };
+}
+
+export default function SchoolDashboard() {
+  return (
+    <div className="max-w-4xl mx-auto py-12">
+      <h1 className="text-4xl font-bold text-green-700 mb-8 text-center">School Dashboard - EcoChamp</h1>
+
+      <div className="grid md:grid-cols-3 gap-8">
+        <Link href="/ecochamp/school/create-event" className="block p-8 bg-blue-600 text-white rounded-lg text-2xl hover:bg-blue-700 text-center">
+          Create New Event
+        </Link>
+
+        <Link href="/ecochamp/school/events" className="block p-8 bg-green-600 text-white rounded-lg text-2xl hover:bg-green-700 text-center">
+          View Events
+        </Link>
+
+        <Link href="/ecochamp/school/students" className="block p-8 bg-purple-600 text-white rounded-lg text-2xl hover:bg-purple-700 text-center">
+          View Registered Students
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+
+src/app/ecochamp/school/students/page.tsx
+========================================
+FILE: src/app/ecochamp/school/students/page.tsx
+========================================
+// src/app/ecochamp/school/students/page.tsx
+export const dynamic = "force-dynamic";
+
+import { prisma } from "@/lib/prisma";
+import { cookies } from "next/headers";
+import StudentModal from "@/components/StudentModal";
+
+async function getCurrentSchoolId() {
+  const token = (await cookies()).get("auth-token")?.value;
+  if (!token) return null;
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    if (payload.role !== "SCHOOL") return null;
+
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: { schoolId: true },
+    });
+
+    return user?.schoolId || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getSchoolData(schoolId: string | null) {
+  if (!schoolId) return { allStudents: [], eventsWithParticipation: [] };
+
+  const [allStudents, events] = await Promise.all([
+    prisma.user.findMany({
+      where: { role: "STUDENT", schoolId },
+      select: { id: true, name: true, email: true, createdAt: true },
+      orderBy: { createdAt: "desc" },
+    }),
+    prisma.event.findMany({
+      where: { schoolId },
+      include: {
+        participations: {
+          include: {
+            student: {
+              select: { id: true, name: true, email: true },
+            },
+          },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+      orderBy: { date: "desc" },
+    }),
+  ]);
+
+  return { allStudents, eventsWithParticipation: events };
+}
+
+export default async function RegisteredStudentsPage() {
+  const schoolId = await getCurrentSchoolId();
+  const { allStudents, eventsWithParticipation } = await getSchoolData(schoolId);
+
+  return (
+    <div className="max-w-6xl mx-auto py-12">
+      <h1 className="text-4xl font-bold text-green-700 mb-8 text-center">
+        Registered Students & Participation
+      </h1>
+
+      {/* All Students Summary */}
+      <div className="bg-white rounded-lg shadow-lg p-8 mb-12">
+        <h2 className="text-2xl font-semibold mb-4">
+          Total Registered Students: {allStudents.length}
+        </h2>
+        <p className="text-gray-600">
+          Share your school code to get more students!
+        </p>
+      </div>
+
+      {/* Event Cards */}
+      <h2 className="text-2xl font-semibold mb-6">Event Participation</h2>
+      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-8">
+        {eventsWithParticipation.map((event) => (
+          <StudentModal key={event.id} event={event}>
+            <div className="bg-white rounded-lg shadow-lg p-8 hover:shadow-xl transition cursor-pointer">
+              <h3 className="text-xl font-bold mb-3">{event.name}</h3>
+              <p className="text-gray-600 mb-2">
+                {event.date ? new Date(event.date).toLocaleDateString() : "Date TBD"}
+              </p>
+              <p className="text-gray-600 mb-4">{event.type}</p>
+              <div className="flex items-center justify-between">
+                <span className="text-3xl font-bold text-green-600">
+                  {event.participations.length}
+                </span>
+                <span className="text-sm text-gray-500">Students Joined</span>
+              </div>
+              <p className="text-blue-600 mt-4 hover:underline text-center">
+                Click to view list â†’
+              </p>
+            </div>
+          </StudentModal>
+        ))}
+
+        {eventsWithParticipation.length === 0 && (
+          <p className="text-center text-gray-500 py-12 col-span-full">
+            No events created yet.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+src/app/ecochamp/student/page.tsx
+========================================
+FILE: src/app/ecochamp/student/page.tsx
+========================================
+// src/app/ecochamp/student/page.tsx
+export const dynamic = "force-dynamic";
+
+import Link from "next/link";
+
+export default function StudentDashboard() {
+  return (
+    <div className="max-w-4xl mx-auto py-12">
+      <h1 className="text-4xl font-bold text-green-700 mb-8 text-center">Student Dashboard - EcoChamp</h1>
+
+      <div className="grid md:grid-cols-2 gap-8">
+        <Link href="/ecochamp/student/upcoming" className="block p-10 bg-blue-600 text-white rounded-lg text-2xl hover:bg-blue-700 text-center">
+          Upcoming Events
+        </Link>
+
+        <Link href="/ecochamp/student/participated" className="block p-10 bg-green-600 text-white rounded-lg text-2xl hover:bg-green-700 text-center">
+          Participated Events
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+
+src/app/ecochamp/student/participated/page.tsx
+========================================
+FILE: src/app/ecochamp/student/participated/page.tsx
+========================================
+// src/app/ecochamp/student/participated/page.tsx
+export const dynamic = "force-dynamic";
+
+import { prisma } from "@/lib/prisma";
+import StudentEventList from "@/components/StudentEventList";
+import { cookies } from "next/headers";
+
+async function getCurrentStudentId() {
+  const token = (await cookies()).get("auth-token")?.value;
+  if (!token) return null;
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    return payload.role === "STUDENT" ? payload.userId : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getParticipatedEvents(studentId: string | null) {
+  if (!studentId) return [];
+
+  return prisma.event.findMany({
+    where: {
+      status: "COMPLETED",
+      participations: {
+        some: { studentId },
+      },
+    },
+    include: { ngo: true, school: true },
+    orderBy: { date: "desc" },
+  });
+}
+
+export default async function ParticipatedEventsPage() {
+  const studentId = await getCurrentStudentId();
+  const events = await getParticipatedEvents(studentId);
+
+  return (
+    <div className="max-w-6xl mx-auto py-12">
+      <h1 className="text-4xl font-bold text-green-700 mb-8 text-center">
+        My Participated Events & Certificates
+      </h1>
+
+      <StudentEventList events={events} />
+    </div>
+  );
+}
+
+
+src/app/ecochamp/student/register/page.tsx
+========================================
+FILE: src/app/ecochamp/student/register/page.tsx
+========================================
+// src/app/ecochamp/student/register/page.tsx
+import StudentRegisterForm from "@/components/StudentRegisterForm";
+
+export default function StudentRegisterPage() {
+  return (
+    <div className="max-w-md mx-auto">
+      <h1 className="text-3xl font-bold text-center mb-8">Student Registration - EcoChamp</h1>
+      <p className="text-center text-gray-600 mb-10">
+        Enter your school's unique code to register and participate in eco drives.
+      </p>
+
+      <StudentRegisterForm />
+    </div>
+  );
+}
+
+
+src/app/ecochamp/student/upcoming/page.tsx
+========================================
+FILE: src/app/ecochamp/student/upcoming/page.tsx
+========================================
+// src/app/ecochamp/student/upcoming/page.tsx
+export const dynamic = "force-dynamic";
+
+import { prisma } from "@/lib/prisma";
+import Link from "next/link";
+import { cookies } from "next/headers";
+
+async function getCurrentStudentSchoolId() {
+  const token = (await cookies()).get("auth-token")?.value;
+
+  if (!token) return null;
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    if (payload.role !== "STUDENT") return null;
+
+    // Fetch schoolId from user
+    const user = await prisma.user.findUnique({
+      where: { id: payload.userId },
+      select: { schoolId: true },
+    });
+
+    return user?.schoolId || null;
+  } catch {
+    return null;
+  }
+}
+
+async function getUpcomingEvents(schoolId: string | null) {
+  if (!schoolId) return [];
+
+  return prisma.event.findMany({
+    where: {
+      schoolId,
+      status: "ONGOING",
+    },
+    include: { ngo: true },
+    orderBy: { date: "asc" },
+  });
+}
+
+export default async function UpcomingEventsPage() {
+  const schoolId = await getCurrentStudentSchoolId();
+  const events = await getUpcomingEvents(schoolId);
+
+  return (
+    <div className="max-w-6xl mx-auto py-12">
+      <h1 className="text-4xl font-bold text-green-700 mb-8 text-center">
+        Upcoming Events
+      </h1>
+
+      <div className="grid md:grid-cols-2 gap-8">
+        {events.map((event) => (
+          <Link href={`/ecochamp/event/${event.id}`} key={event.id} className="block bg-white rounded-lg shadow-lg p-8 hover:shadow-xl">
+            <h3 className="text-2xl font-bold mb-4">{event.name}</h3>
+            <p className="text-gray-600 mb-2">
+              {event.type} â€¢ {event.date ? new Date(event.date).toLocaleDateString() : "Date TBD"}
+            </p>
+            {event.ngo && <p className="text-green-700 font-medium">Donated to {event.ngo.name}</p>}
+            <p className="text-blue-600 mt-4 hover:underline">View Details & Join â†’</p>
+          </Link>
+        ))}
+
+        {events.length === 0 && (
+          <p className="text-center text-gray-500 py-12 col-span-2">
+            No upcoming events for your school. Check back later!
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+src/app/favicon.ico
+========================================
+FILE: src/app/favicon.ico
+========================================
+         (  F          (  n  00     (-  –           ¾F  (                                                           $   ]   º   º   ]   $                                           ò   ÿ   ÿ   ÿ   ÿ   ò                               8   à   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   à   8                  â   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   â              ¡   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ¡       #   ô   ÿ   ÿOOOÿ®®®ÿ«««ÿ«««ÿ«««ÿ«««ÿ­­­ÿgggÿ   ÿ   ÿ   ô   #   Y   ÿ   ÿ   ÿÿíííÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıııÿ555ÿ   ÿ   ÿ   ÿ   Y   »   ÿ   ÿ   ÿ   ÿkkkÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ   ÿ   ÿ   ÿ   ÿ   »   »   ÿ   ÿ   ÿ   ÿ			ÿÍÍÍÿÿÿÿÿÿÿÿÿäääÿÿ   ÿ   ÿ   ÿ   ÿ   »   Y   ÿ   ÿ   ÿ   ÿ   ÿJJJÿıııÿÿÿÿÿkkkÿ   ÿ   ÿ   ÿ   ÿ   ÿ   Y   #   ô   ÿ   ÿ   ÿ   ÿÿ¶¶¶ÿÕÕÕÿ			ÿ   ÿ   ÿ   ÿ   ÿ   ô   #       ¡   ÿ   ÿ   ÿ   ÿ   ÿ111ÿDDDÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ¡              â   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   â                  8   à   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   à   8                               ò   ÿ   ÿ   ÿ   ÿ   ò                                           $   ]   º   º   ]   $                                                                                                                                                                                                                                                                                    (       @                                                                               ,   U      è   è      U   ,                                                                                      *   …   Ò   ù   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ù   Ò   …   *                                                                      –   ó   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ó   –                                                          Q   á   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   á   Q                                               r   û   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   û   r                                       r   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   r                               O   û   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   û   O                          ä   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ã                      —   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   —               (   õ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ô   '           †   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ888ÿ‹‹‹ÿˆˆˆÿˆˆˆÿˆˆˆÿˆˆˆÿˆˆˆÿˆˆˆÿˆˆˆÿˆˆˆÿˆˆˆÿˆˆˆÿˆˆˆÿˆˆˆÿ‰‰‰ÿ___ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   †          Ô   ÿ   ÿ   ÿ   ÿ   ÿ   ÿÿîîîÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿSSSÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   Ô      +   ú   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿhhhÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ®®®ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ú   +   T   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿÿËËËÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿôôôÿ,,,ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   T   ‚   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿGGGÿıııÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ      é   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ­­­ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿäääÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   é   é   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ+++ÿóóóÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿjjjÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   é      ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ‹‹‹ÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÌÌÌÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ‚   T   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿÿãããÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıııÿIIIÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   T   +   ú   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿhhhÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ¯¯¯ÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ú   +      Ô   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿÿËËËÿÿÿÿÿÿÿÿÿôôôÿ,,,ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   Ô          †   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿGGGÿıııÿÿÿÿÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   †           '   ô   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ±±±ÿìììÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   õ   (               —   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ333ÿ___ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   —                      ã   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ä                          O   û   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   û   O                               r   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   r                                       r   û   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   û   r                                               Q   á   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   á   Q                                                          –   ó   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ó   –                                                                      *   …   Ò   ù   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ù   Ò   …   *                                                                                      ,   U      è   è      U   ,                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               (   0   `           -                                                                                             	   (   L   j   ³   ø   ÷   ³   j   K   (   	                                                                                                                                          V       Ø   ø   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ø   Ø       U                                                                                                                      %   ‹   á   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   á   ‹   &                                                                                                      ‹   ï   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ï   ‹                                                                                          Q   Ü   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   Ü   R                                                                              Š   ş   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ş   Š                                                                     ­   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ­                                                             ¸   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ¸                                                     ®   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ®                                              Š   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   Š                                       P   ı   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ı   O                                  ß   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ß                              ‹   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ‹                       #   ñ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ñ   #                   Œ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ‹                  ä   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ$$$ÿhhhÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿeeeÿPPPÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ä              U   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿÿëëëÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿsssÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   U           ¡   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿeeeÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÌÌÌÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ¡       	   Ú   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿÿÉÉÉÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıııÿHHHÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   Ú   	   (   ù   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿEEEÿüüüÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ®®®ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ø   (   K   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿªªªÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿôôôÿ,,,ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   L   j   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ)))ÿòòòÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿŒŒŒÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   j   ´   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿˆˆˆÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿãããÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ³   ø   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿÿáááÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿiiiÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ø   ø   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿeeeÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿËËËÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ø   ³   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿÿÉÉÉÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿıııÿHHHÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ´   j   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿEEEÿüüüÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿ®®®ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   j   L   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿªªªÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿôôôÿ,,,ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   K   (   ø   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ)))ÿòòòÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿŒŒŒÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ù   (   	   Ú   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿˆˆˆÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿãããÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   Ú   	       ¡   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿÿáááÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿiiiÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ¡           U   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿeeeÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÿÌÌÌÿÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   U              ä   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿÿÉÉÉÿÿÿÿÿÿÿÿÿıııÿHHHÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ä                  ‹   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿEEEÿüüüÿÿÿÿÿ®®®ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   Œ                   #   ñ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ¬¬¬ÿûûûÿ,,,ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ñ   #                       ‹   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ222ÿ}}}ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ‹                              ß   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ß                                  O   ı   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ı   P                                       Š   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   Š                                              ®   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ®                                                     ¸   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ¸                                                             ­   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ­                                                                     Š   ş   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ş   Š                                                                              R   Ü   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   Ü   Q                                                                                          ‹   ï   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ï   ‹                                                                                                      &   ‹   á   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   á   ‹   %                                                                                                                      U       Ø   ø   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ÿ   ø   Ø       V                                                                                                                                          	   (   K   j   ³   ÷   ø   ³   j   L   (   	                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        ‰PNG
+
+   IHDR         \r¨f   sRGB ®Îé   8eXIfMM *    ‡i                                D"8s  IDATxí]	°Õ™n”]<QVA–èÄh$	ÊNŒ13*ˆq°ÂdªÄ©I¡ˆ˜D“L2“ª(Î(Ô˜2ÖÄ™ÑG	‹Áq_@å±ˆà†ŠxÈ›ï»Ğ¾{o÷½½ÓııUß{}»OŸå;çÿûôùÏ9İÂ‘d®(Dg Ğ8	èôN º]€î@ hx¥?v ÀNà3à=`;ğ6ğ.ğ&°àuâà  ±”6‰P©Ğ½€Á@ÿÃ RÓ PùiZqÊ^DNãà€wp¼Ø¼ĞXĞhĞ˜Hg@ÀÌ
+:Ùâ|ğ5` p"@À'¼É²™s{ëpü*ğ2ÀŞ…Ä d Ò¯Œ–È|(0ø
+0 à“>Kò
+³xX¬6 IJÈ ¤C|?$KENØ}Ï“|ŠÂòµáàöh $	2 Ù|/§Â . Nz ’#¼ÃW€eÀ
+à5€ã’ˆÜ¶ˆúà;Ày •¾ ñgàs©h^  IÄÈ DL(¢;¸8 ÒHjg€cH|x 1 ËR"Œa€ïôÓ• GÁÙ@…è9`/`%0èHÄ@jğ½~,° ÛK
+Ÿ,t).ÎèI‘ˆDèT¦Oû)~º°Vìu$b èª›ĞU%¥7“ƒ¨›ù _É$b 8Aç×À€ßøJö3` 510wQñ?¤øvrğÑá:ü2şKÄ@ ¤øv*{%#í‚AZ€å’^(õÏ=ñ³g \ãÀWƒÛ€É!:àß,`à6ıÏ643:@’c.FÙŸ¤ğùä€u?Ğ<'áİ€ƒ€”_Üvp: É8Q¾›
+IñÅ·p{3ÎóĞkHÈ¢ŒG¡¼•®cñÑ¼<62&‹
+×2uCÁÿàÚòæ•­ßâ¤Tø3Ú
+½ê€›…;î¼”ªd/~m€½.ø’XÆ@{äw.°ğ«d]G•Ú {lKÜàEbœÿı(P©RuMüTÛC›ÒÚÃÀdäï])¿Œ_Lmà=Äû=@bœÍ÷K€ÛGUkÙ^œUÓØÆØÖøš)1€È»gÕT¢ÂŠ¯°m`9Ú\Ú®³ÀQşÍ@ØÊÔıâ°–6ğ:ÚÕ^›w¬òï¸E—D¤Á ç	ü5°àºëÄFĞ,ßÜ
+ğX"Òd€mğ<€nB~òì@´¸÷µt×tx‹»ü;ÚfŞ>ñ“ªíI8µˆ»¿8Ó¸C1Ûª$B¸•§e†©İ+ş’jl«ÜEZÃÇ& ©ÊS:â:Š6°möë´ÿ\G1¥ç`¢¨Å!“nl»lÃÆŠÉ^€Q`í·@OcÙSÆÄ@e¸Í·º¹ç¤qbªp•ÿãS†Ä@upšº±FÀD@å¿Ğ“¿º†¦Ğæ2@#À¹ÆõL3 £A’”$H2Ç _h¶FH#rq(íÿOàDƒò¤¬ˆ¨àrunGOWaêbŠ &–SgDñ3ÀEDçto§*Ç¤šú¡Ä9kŠİ~)¿•¡,$Â x¿RŸ1˜vàK áÀ9€DäU(ğw®&LEÒäê©»€S)¹é3ĞY8x8 $.i€(íŒÄK¬Å€YœìğaÈ]­—´À4”ôÇ€	c‰“®Å@3¸fà€ó•4Æ Æ¢„ÿĞ/*bàüş Çş˜$!I€~‡Ø7ÉB*-1`	o Ÿ º	‘$»àÇ¡D‹¾‰”L‰ˆûàòß êJ"’äÀOQ¢Ë)•ö2@#Ğx4‰"$e ¨ø·Iö8’àOiˆ8ø"İ ¼GäŞ8[xÄt<ñ.´´7&‚m&ØR^‹³tq÷ Ø•á.¾§ÅYÅ-2È ½d§ ûã*_Üà&d|j\™W¼b ãôGùö«â*gœ¯ £‘é‡ÄF4ã"IñŠØƒ´/ b1q€NÈğãÀY€Dˆp¼ŒÛ9îãpÑ}w\¯ ó‘Ô¤£“Ó1 j`€èOûŸî­xK=€ÑHñ÷ ÷A“ˆ1Ÿ#¾
+D:U8jÀõıtù©ë$b bA||ØU¼Q¿ü26%ªÌ)1 Šè…_Àê¢³!~DÙàºæ• ¿à+b >A´Ü:]ÑE$ˆ£50òGDhRÑtèĞÁéİ»wRÉ)ğPÇ ‘èn$‘ 3ÜÖë@bS§Nu–,Yâ´jÕÊ²œç:»¡ôÜ;ÀáÀßó@£`Ç|ã–-[)“'OVıÙÕ†©sFxÚ®“âÛ¥øn}Í›7¯ üü³~ıúÆºº:»ŒÀQ—©J_¤ÎUKj8–q0xğàÆ;v4 Ì=[õhW=¾	İë	¤&·!e5Ë8hÑ¢Eãİwß]¤üüñá‡6öïß_õiW}şSZÚ?	¿/`Ÿ;vlã¾}û2 <±hÑ" »À§ĞAî¹‘¸ÜÕX,ã mÛ¶+V¬(©ü<¹wïŞÆ#F¨^íª×;“ÖşaHğc ûà”)SÊ*¿{aùòåpÊØc89(Ñ^€şö4&E¦ÛoÃ†®Wü/· uÆ=±^€ş*?{k^·_EíÇÅúúz¹íªgö† UI-‹è{WU*
+œ:pû9.tÚ·o(/İºus>ûì3ç‰'^Rg€ßäÚGâÌI_D®‘»åÜ~~½ ¹­{øúÙ?N0‘7½SêØ.Æ×¸ÿ~?}/y]nA;êØ£‹³ã2 ]ñFOB2C?·_I­÷œ”[Ğ:°:Ú=#ÀOzKé-ã ˆÛÏ£ï%å´®İ?jĞşIÀ®†PÛ¯¤æ{NÊ-hUİÿt•:™œƒ˜øõ ,â ·ŸG×KÊ-hUÛç¢cƒhP7 ÿÎ¡Â˜Á@µn?¿\Ó-¸k×.¹ıˆ2ã:õú ğ`ÙáF„Û=ı-á V·_ÉG¿ç¤Ü‚Vé İõ}¢0 WIù­ªøFºıÊ­öóèsM‡rZÕ8pJ¸QÜ*@OK8ëöó³
+rZ¥Ôİ–a, ßûwË ØSéW^y¥Ÿ‡¾.· 5íat7ÔØİ¤üÖTv#İ~7n­àA"¸üòËÕ+´£WøèpMÂÅ/ªhK8ˆÒíçgä´F/^„·«ÅŒÀM{e ì¨èR›|ú)qØë7İt“æ?8'àµ€KùíP~ºıî¹ç°ú\õırÚÑ> Ç·Uk ØeP÷ß|ë^xÇéöó³
+‹/V/Àüvòô™¯ôå„ä¢*×pâvûù ¹­Ğ¾ÊŸ]JûË}óˆk8(•ˆÎÅÇÀÄ‰Ñ£GÇ—€OÌmÚ´q,X oúğ”òe.â˜^ ¡QxĞÓßp’tûùõä4^_ƒN—{à†¾øÅyÄ2 †s¤ÛÏÏ Ğ-Ø¹sgµsÛÌĞiêv‘”Z8
+!~PJ?Œc€«ıîºë®À›|Æ] ®Ü½{·³zõê¸“Rüµ1pnãÔàzïí¥º¼tlpû9³fÍrºvíjTæ®¿şzß4*OÊLã‹~•øÑçÔ•3˜ƒ4İ~~¯r­;ÔmêxYŒ+üÀ€€¡¤íöó3 r­;Ômêx“4à÷Å:7]ÕqLš4)U·Ÿ!rú1”êuê6¿ìÕ$ÍÀ7›®èÀ8ºwïîÌ™3Ç¸|5Ï>?î\zé¥ÍOë·œëÍ†× ğø,ïE›ÅÀŒ3œš•©2¹¹å–[œººº2Wu:E¾‚´›¼^p.H1cJºtû]}õÕB˜uéÔSOu®ºŠ»ÉIc€O¥òÄ%ƒ  ÆAZ«ıüüü®kµ ‘ºD?Ç5 Ş@Q×À ÿé3Àwê+®¸"ıŒT™ÎSÀUŞ¥à13Àî?ûâ5 M'İ‹úŸ>pûşZµj•~fjÈ×ˆ×¡Ô‚n©¦±>× ğÿi5D¤[bf íÕ~a‹'·`Xc¹Ÿã -¼1ók¢›½ÿÄI«ıüŞ÷ı®kµ QºÅ¯|ókßMËé(92È@’t°ÉíçÇİ‚X-èL×“a€úN4€“qÜ'$f0@·@V„nA›Ü˜Yá½L9:â|/^sÇ ú—	¨Ó)0`êj¿°T\wİuZ-–ÄèîÂ¨\ 	@Ñ:¦±cítûùœ{È-èÇRb×û1%× ôI,Y%T‘Ûİ~‡‹rú1”ØõÂCŸ€,¼$–´*Ë€é«ıÊf<à¹0zş¥èhÕFü„û¦ ·Ÿ«ı|â€¯8Z-èCRü—¹Tg× ĞHRf€‹glYí–ª¹sçÊ-–Äp÷Ó'+Ãèî¶mµ_Ø’gÍÍ–îçC¿{ ô	òÃ’”ÈªÛÏÎ™3gÊ-èGR|×¹7`G€Şñ¥¡˜ƒ0U·Ÿ_ÙµZĞ¡Ø¯ŸD )À±ó\>¬»ıÊ—üĞ¹ıŠõz N–¤Ä@Öİ~~´Ê-èÇP¬×{rs€¿´@¬<—œ›|.]ºÔ¸|”Îm|gûõëç¬_¿Şyå•WâKD1—bàM½”¢%¡s\“·Ÿ¥rú1Ëõnì\–Æ’„"-É İ`.4æÛ~%3™àI}[0A²$µ“= -Ò>BH"G®Û^r„­<ÂEBGİi Ú%”˜’9Ì@^İ~~@«ıŠüú1Üì€†@’ tû-[¶ÌèÏ{%@CÙ$ğmAgüøñÎš5kÊ†Ñ…ÈøœŠ/åŒOÿˆlßäÓ¿„áBĞ@.X°À±uäp¥Oüî6œ—x²9MPn¿`ß·o_§¾¾^nÁ`t…
+¥§(úª»™ƒ\rûùsÆAÒyóæéÛ‚şT…¡@h
+ƒE0lØ0çÎ;ïtÚµÓ˜kÆ¸N ¡¡ÁYµjUà
+S#ì|^ã½º- |¢İpÃN—.…­ØŞ¥`×^{­zLñ6ƒƒ4 ŸÄ›†bç¨öe—]&"ªd€sÎœ9UŞ¥àU0ğ!ÀÁ*nPĞ*`—ÿæ›oÖ¨v•¼¹Ái8GåşÔÿhh ØmœŠÍËÀäÉ“sÏ=×{JÇU0ÀÕ‚óçÏwZ·æş’ˆø”ƒ€ì›ö8bEzôèá,Y²Dïş![CŸ>}œ7:k×®“noÆÀfö >jvR?#b€ƒXˆ(¶üFÃAT¾FÕÕióêˆ[Á{ì°zvÄç>º¡C‡Êía+[0B2Dµœ=€íG~ë(
+øÄºñÆÕõ‚LO×\sÜ‚>"8|‹`[)
+&Lp8ø'‰–öäŒ”Óí4 oGeÎ#£ÛÀlÙ’_\“DÍ€Ü‚‘2ZØl¢Üi´9ŒtäÈ‘9f Ş¢Ë-¿œ¼‹=€‡YÌyˆn?uQã¯}XÍ¬ÍsAïi >=ŒĞ1æ=RÉí+à +­Ü‚¡¸.2 šŠKì«·ßôéÓCÆ¢Ûƒ20hĞ ‡Ë«%53À5@…MA¹%˜¦×Ì£ãÈí‚¼·j[õä9Î;¸û _(¯ú§¿µ0ÀÕ~rûÕÂ\¸{ômÁPüÜÿ®x#TT9¾™n?¾Êí—N# á•×¥&î}× ¬¯)
+İTVL¯!¸ßÔjÁªë`ïp ß8@RrûUAVŒAå¬šÜ=¸ã-Şå€÷pLHª`@n¿*ÈŠ1¨Ü‚U“Ëõ?}w ]ìH2@·ß´iÓ†V°¸ [Ë¯%àôÿ‚ëß5 8±)Ğ­
+T`€›|rZbZ-¸.Ö!da+@× ğÎçßó€Zígf[0p½¼æ†ô ä¤ I´Égr¸$· o%PÇ_rCyÀVœ|ß½ ÿ¥à"mòYšÎÊ-è[ lÚÄk xAã ø“Û¯9]¢[pÒ¤IåÈ¨¬pP“ÇÏk ŠºFeÙÌÈígHEødƒnAm"Z–$õ5}„›‚zå8üéô2røX›|– ÅàSÜ»w¯³råJƒs™JÖ~T›fşz{ ÌÍ« ÷xĞj?jµàQ•Eİnò ğjsÀùÁ|GxĞ·ı<dXt(·àQ•Eİ.¬p¯47 Üğ)÷¢ş;…Ïysµ_«V­D‡…È-XTiÔí¢ı?› †~¼è–œÿÛÏî ·`Qı=Vô?šòú^à
+€‚¹ºı–.]ª|XŞ
+ômÁB~€¿?ŠÆøJõ ŞD —·äüÜ~Ùh rê‘óÿ©ÛERªÀ…Aİ€óŠBæìİ~wÜq‡Ó¾}ûœ•<›Å•[Ğ¹5ûdóÚ-Õ`˜5 ?Kqİ~l4’ì0@·à)§œ’/I‚®(¼œà‡Ø‹ü…¥nÎê9¹ı²Y³4èœ!˜CÙˆ2×—*w9ÀÀGKİõsî&Ÿrûe³¦súé¶? 6Ù8JÊ |(òuwOä´d°&K)‡nA¾Ê?RšÒn@7,·º8Á=‘õÿrûe½†•nÁM›69k×òM7óÂéı·J•´R€]†e¥nÊê9¹ı²Z³Ååâ /?á“o>ŒÒó•¾¤”rzrÒÀ óó`åöóV{ö»uëæ4448«V­Êra÷ p³ îõQRZ”<{ädK.F9•½#~Tâ¾ûîs.¾øâìN%*Ë ÀğáÃuë8G&“²¥ì/W:*x%á{Ã}@¦ »‚lõõõNc#çAIòÀÀ±Ç›õiŞ÷£Ë*?ëØ¯À0}€g€ãùC"Ä€pÛ¯³€Šßû¨4è–’Ò(bÀ8€_QùY” €áîr7'€—ˆ`·ÿî ùj ¸6à… *Œ©3ÀWögƒä"¨àl¢¡Âˆ1:ì±Sg}%È  	¹¥P?÷„ş‹1`›£¯ÉYĞ ãâ"‹‚Dª0b@¤Æ İö”Ÿ9¬¦Àğı¾[tá‰F1À‡ôp`kĞ\UÓ`œÜRø·A#W81 e`)RÛZMŠÕö ÷€[uæ‰F0ğ	rq.ÀÕ¥Ú #^ğ=C"Ä€9P'«R~f½– ï
+pn€zdC"Òe ¦§?³\K€÷½¨@&$b }jzú3Ûµö x/{èÄ1 Ra€#ÿ|÷çÆŸUK­= &Ä^€æTM¹n‘2À9ÿ5)?s¦Àû{O'ó‡DˆDà’ßo [kMÕoK0¿xÿŒ ÜTd‚_@]b ræ ÆGÃÄ¶À´; «€¯ò‡DˆDàêÜ1ÀgaRÛ`ÚÜ'`0ˆÂ  ‰>\ë/ù„ñ½fĞùƒøñ÷„Å€ˆß!fn÷Z¢|bŸ†ÜğU .t®åà¤ŸÑÀÚrª9Å+€›ı‘­€±î	ıb rnEŒDk”= æé8àÀÙü!b RClã€PŞEÙ`¼ÜŒK†'~ß@‰ Ë}*°!`ø@Á¢6 Lô ;À	$b@DÃÀ?#šÈgŞFı
+àµV”ˆ1vıÇ;ÃEsôİQ¹›ÇÌ=É®ö4¿ ßb@TÅÀn„ş!¹ò3q¼0^ÊV€ã c ‰µ1ğÜ¶´¶[ıïŠëÀM¹=8Iˆİ‰Õ1@Ú…@Cu··`N¸oÀã WJÄ€Æ WúÑåÇe÷±Iœ¯ n¦¹Nàmà¯€¸ÆÜ´ô_d(Ä4`EÜ…IÂ °¯œ"ÌµË1 *3ğ+\şEå Ñ\MâÀÍ)g	rÁ¦
+»Œè¿8š>õ¿pô?vIÒ °0€Ç€~ü!b ˆ­øÅ$'Ó%"I¿“¿RıÀi1 0°‡? S~&Ô Ór…ä’Æ€¤{ nô_˜ÄÀÈÌLà?’ÎT€eäÔÆÀ7ùC"rÎÀOQ~"qIË ° O 8?$b §Ü‹rÿ#@×_â’v¼JÌ™‚£/¹é3ğ'dá/ÈÖ÷W[¤¤›ço'Nüğlóú-2Î Ûüå@jÊO~Óî0”À2` HÄ@ÆØ„òĞ+–ª¤İpOB® ŞuOè¿È(lãS€Ô•Ÿü¦9Èô½ò~ğcß:x/èXd„.ğù°Æ”ò˜d ÈÉVày@F $H2Å •Ÿïü+M*•i€Ül8O@F $H2Á •Ÿå®2­4& r´POÀ´Ö¢üÔÂ€ûä7NùYS ó¶ øÀYƒ1`ğã;ÿJS3n² g['‘@W@"la`32Ên?'ûHB2p
+îhÄm€mu ‰“×j@F@˜ÜV ²­Z!¦¿xIä”ÉÿH®y™Ñ±)üù>ÀåZ!6 ºà”aÎ`äş‚¦ÌdDV$9f€ëù	pM¿6»I¨!LG:\LdrwPyË~ıPá§%Ôæ•L3Æá7çTKÑÄAm€mo|³6©Ÿ	3Ğé-Òh J3¿¼?67 á¶yr¶”"€ûşàgÈÎ4. $±1À÷ı_¼[*Š¸&¸¤˜S/õdq´Îìãä‰ÁCŞâh Š3¿¼>Š6Å¶%±€¶Èã\€#´RZq¦ğ=lK|Å”XÆÀXäWSˆe j5 /¡ıĞÓ$±˜:äıv@½‚ †€Î8Ğ×d„1(‡z2~Fà)´ùö3¢ôÍ‹ÁŞÀl€®C¿† ëùâè#´‰›í=².\Lt? %Ñ N$9b %Ê:àşƒ2ùä€u	 É1|-˜	ldòÁ÷œœt $b À@?ü¥·@† »FàcÔïÏ^€D”d€[9ıà zÙà€ŠÏ:
+HÄ@ ¾ŒP2v )~ ¦®@•àüïŸz5°Ç|€úÒ¿R«ÖµªàÁ|`# W39Ø‚ºá<î"-±0Àï\<ìdÒå€uÀoGLz 1œGp°à—e’å€¯d‹ .øjHÄ@jôFÊ3€•@ c{s<ÿùJ&	É@‹÷ëöb¸ÙÀw‹  ²§ ©nÁµàvğœ²û< ‰ˆ€ˆˆ,M;œû*p>p!0hHüà{=•»ğüxà]IÄÈ DLh™èÚâ<'¡Œh8Ç@V Á#ïã˜Jÿ°àfû IŒÈ ÄHn…¨ûãWŸ}àNÆt[uò$Ÿ¢°›§å ş@’ 2 	’]&)† #€3ˆ“,	=%¯TôÕÀkÀ&à  I‰€”ˆ÷I¶®Ó³ğ Ù[8	è	´L–]È]tïTğgõÀ6à-@b2 U†OVºã: A?€¯} .iî|	àxCœÂ÷rvßw; ÎÀ#ê>éi 8_b82 †WP€ìÑõè  {'n¯áÓ8ğz;€Æ¤yİsŸ œÃ@¥¦¼P¡·o|ÂSùih $3ğÿ@ß¹jìŠá    IEND®B`‚
+
+
+src/app/globals.css
+========================================
+FILE: src/app/globals.css
+========================================
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+
+
+src/app/layout.tsx
+========================================
+FILE: src/app/layout.tsx
+========================================
+// src/app/layout.tsx
+import type { Metadata } from "next";
+import { Inter } from "next/font/google";
+import "./globals.css";
+import Navbar from "@/components/Navbar";
+import { cookies } from "next/headers";
+import { ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
+const inter = Inter({ subsets: ["latin"] });
+
+export const metadata: Metadata = {
+  title: "SocietySalvor",
+  description: "Scrap collection and donation operations platform",
+};
+
+async function getRole() {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("auth-token")?.value;
+
+  if (!token) return "GUEST";
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    return payload.role || "GUEST";
+  } catch {
+    return "GUEST";
+  }
+}
+
+export default async function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
+  const role = await getRole();
+
+  return (
+    <html lang="en">
+      <body className={`${inter.className} min-h-screen bg-gray-50`}>
+        <Navbar />
+        <ToastContainer position="top-right" autoClose={3000} hideProgressBar={false} />
+        <main className="container mx-auto px-4 py-8">{children}</main>
+      </body>
+    </html>
+  );
+}
+
+
+src/app/login/page.tsx
+========================================
+FILE: src/app/login/page.tsx
+========================================
+// src/app/login/page.tsx
+import { redirect } from "next/navigation";
+import { prisma } from "@/lib/prisma";
+import { comparePassword, signToken } from "@/lib/auth";
+import { cookies } from "next/headers";
+
+export default function LoginPage({
+  searchParams,
+}: {
+  searchParams: { registered?: string; error?: string };
+}) {
+  async function loginAction(formData: FormData) {
+    "use server";
+
+    const email = formData.get("email") as string;
+    const password = formData.get("password") as string;
+
+    const user = await prisma.user.findUnique({
+      where: { email },
+      select: { id: true, password: true, role: true, schoolId: true },
+    });
+
+    if (!user || !(await comparePassword(password, user.password))) {
+      redirect("/login?error=invalid");
+    }
+
+    // Use the new signToken signature
+    const token = signToken({
+      userId: user.id,
+      role: user.role,
+      schoolId: user.schoolId || null,
+    });
+
+    const cookieStore = await cookies();
+    cookieStore.set("auth-token", token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "strict",
+      maxAge: 30 * 24 * 60 * 60,
+      path: "/",
+    });
+
+    redirect("/");
+  }
+
+  const error = searchParams.error;
+  const registered = searchParams.registered;
+
+  return (
+    <div className="max-w-md mx-auto mt-20">
+      <div className="bg-white rounded-lg shadow-lg p-8">
+        <h1 className="text-3xl font-bold text-center mb-8">Login</h1>
+
+        {registered && (
+          <p className="text-green-600 text-center mb-6 font-medium">
+            Registration successful! Please log in.
+          </p>
+        )}
+
+        {error && (
+          <p className="text-red-600 text-center mb-6">Invalid credentials</p>
+        )}
+
+        <form action={loginAction} className="space-y-6">
+          <input
+            name="email"
+            type="email"
+            placeholder="Email"
+            required
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+
+          <input
+            name="password"
+            type="password"
+            placeholder="Password"
+            required
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+
+          <button
+            type="submit"
+            className="w-full bg-green-600 text-white py-4 rounded-lg text-xl font-semibold hover:bg-green-700"
+          >
+            Login
+          </button>
+        </form>
+      </div>
+    </div>
+  );
+}
+
+
+src/app/ngo/dashboard/page.tsx
+========================================
+FILE: src/app/ngo/dashboard/page.tsx
+========================================
+// src/app/ngo/dashboard/page.tsx
+export const dynamic = "force-dynamic";
+
+import { prisma } from "@/lib/prisma";
+import { cookies } from "next/headers";
+
+async function getCurrentNGO() {
+  const token = (await cookies()).get("auth-token")?.value;
+  if (!token) return null;
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    if (payload.role !== "NGO") return null;
+
+    return await prisma.nGO.findFirst({
+      where: { users: { some: { id: payload.userId } } },
+    });
+  } catch {
+    return null;
+  }
+}
+
+export default async function NGODashboard() {
+  const ngo = await getCurrentNGO();
+
+  if (!ngo) {
+    return <p className="text-center py-20">Unauthorized or NGO not found</p>;
+  }
+
+  if (ngo.status !== "APPROVED") {
+    return (
+      <div className="max-w-4xl mx-auto py-20 text-center">
+        <h1 className="text-4xl font-bold mb-8">Application Under Review</h1>
+        <p className="text-xl text-gray-600">
+          Your NGO application is pending approval. You will be notified when approved.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto py-12">
+      <h1 className="text-4xl font-bold text-green-700 mb-8 text-center">
+        Welcome, {ngo.name}
+      </h1>
+      <p className="text-center text-xl text-gray-600 mb-12">
+        Your NGO is approved! Donation impact metrics coming soon.
+      </p>
+    </div>
+  );
+}
+
+
+src/app/ngo/login/page.tsx
+========================================
+FILE: src/app/ngo/login/page.tsx
+========================================
+// src/app/ngo/login/page.tsx
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "react-toastify";
+
+export default function NGOLoginPage() {
+  const router = useRouter();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    setLoading(true);
+
+    const res = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password }),
+      credentials: "include",
+    });
+
+    if (res.ok) {
+      toast.success("Login successful!");
+      router.push("/ngo/dashboard");
+      router.refresh();
+    } else {
+      toast.error("Invalid credentials");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="max-w-md mx-auto py-20">
+      <div className="bg-white rounded-lg shadow-lg p-8">
+        <h1 className="text-3xl font-bold text-center mb-8">NGO Login</h1>
+
+        <form onSubmit={handleSubmit} className="space-y-6">
+          <input
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            placeholder="Email"
+            required
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder="Password"
+            required
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-green-600 text-white py-4 rounded-lg text-xl font-semibold hover:bg-green-700 disabled:bg-gray-400"
+          >
+            {loading ? "Logging in..." : "Login"}
+          </button>
+        </form>
+
+        <p className="text-center mt-6 text-gray-600">
+          New NGO? <a href="/ngo/register" className="text-blue-600 hover:underline">Register here</a>
+        </p>
+      </div>
+    </div>
+  );
+}
+
+
+src/app/ngo/register/page.tsx
+========================================
+FILE: src/app/ngo/register/page.tsx
+========================================
+// src/app/ngo/register/page.tsx
+import NGORegisterForm from "@/components/NGORegisterForm";
+
+export default function NGORegisterPage() {
+  return (
+    <div className="max-w-md mx-auto py-12">
+      <h1 className="text-3xl font-bold text-center mb-8">NGO Registration</h1>
+      <p className="text-center text-gray-600 mb-10">
+        Submit your organization details for approval. Once approved, you'll gain access to donation tracking.
+      </p>
+
+      <NGORegisterForm />
+    </div>
+  );
+}
+
+
+src/app/page.tsx
+========================================
+FILE: src/app/page.tsx
+========================================
+// src/app/page.tsx
+"use client";
+
+import { useEffect } from "react";
+import { useSearchParams } from "next/navigation";
+import { toast } from "react-toastify";
+
+export default function Home() {
+  const searchParams = useSearchParams();
+
+  useEffect(() => {
+    if (searchParams.get("loggedout") === "true") {
+      toast.success("Logged out successfully!");
+    }
+  }, [searchParams]);
+  // Rest of your home page code
+   return (
+    <div className="text-center py-20">
+      <h1 className="text-5xl font-bold text-green-700 mb-8">
+        SocietySalvor
+      </h1>
+      <p className="text-xl mb-12">
+        Hassle-free scrap collection. Sell or donate responsibly.
+      </p>
+      <div className="grid md:grid-cols-2 gap-8 max-w-4xl mx-auto">
+        <a href="/sell" className="block p-8 bg-blue-600 text-white rounded-lg text-2xl hover:bg-blue-700">
+          Sell Scrap â†’ Earn Money
+        </a>
+        <a href="/donate" className="block p-8 bg-green-600 text-white rounded-lg text-2xl hover:bg-green-700">
+          Donate Scrap â†’ Help NGOs
+        </a>
+      </div>
+    </div>
+  );
+}
+
+
+
+src/app/rep/dashboard/page.tsx
+========================================
+FILE: src/app/rep/dashboard/page.tsx
+========================================
+// src/app/rep/dashboard/page.tsx
+export const dynamic = "force-dynamic";
+
+import { prisma } from "@/lib/prisma";
+import { cookies } from "next/headers";
+
+async function getCurrentRepId() {
+  const token = (await cookies()).get("auth-token")?.value;
+  if (!token) return null;
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    return payload.role === "REP" ? payload.userId : null;
+  } catch {
+    return null;
+  }
+}
+
+async function getAssignedOrders(repId: string | null) {
+  if (!repId) return [];
+
+  return prisma.order.findMany({
+    where: { repId },
+    include: { items: { include: { scrapItem: true } } },
+    orderBy: { pickupDate: "asc" },
+  });
+}
+
+export default async function RepDashboard() {
+  const repId = await getCurrentRepId();
+  const orders = await getAssignedOrders(repId);
+
+  if (!repId) {
+    return <p className="text-center py-20">Unauthorized</p>;
+  }
+
+  return (
+    <div className="max-w-6xl mx-auto py-12">
+      <h1 className="text-4xl font-bold text-green-700 mb-8 text-center">
+        Assigned Pickups
+      </h1>
+
+      {orders.length === 0 ? (
+        <p className="text-center text-gray-600">No pickups assigned yet.</p>
+      ) : (
+        <div className="grid gap-6">
+          {orders.map((order) => (
+            <div key={order.id} className="bg-white rounded-lg shadow p-6">
+              <h3 className="text-xl font-bold">Order {order.publicId}</h3>
+              <p>Type: {order.type}</p>
+              <p>Pickup: {new Date(order.pickupDate).toLocaleDateString()}</p>
+              <p>Status: {order.status}</p>
+              <p>Items: {order.items.length}</p>
+              {/* Add buttons for PICKED_UP, WEIGHED, COMPLETED */}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+src/app/sell/page.tsx
+========================================
+FILE: src/app/sell/page.tsx
+========================================
+// src/app/sell/page.tsx
+import { prisma } from "@/lib/prisma";
+import SellScrapForm from "@/components/SellScrapForm";
+
+async function getData() {
+  const [items, ongoingEvents] = await Promise.all([
+    prisma.scrapItem.findMany({
+      where: { active: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.event.findMany({
+      where: { status: "ONGOING" },
+      include: { school: true },
+      orderBy: { date: "asc" },
+    }),
+  ]);
+
+  const plainItems = items.map((item) => ({
+    id: item.id,
+    name: item.name,
+    unit: item.unit,
+    basePrice: Number(item.basePrice),
+  }));
+
+  const plainEvents = ongoingEvents.map((event) => ({
+    id: event.id,
+    name: event.name,
+    school: { name: event.school.name },
+  }));
+
+  return { items: plainItems, ongoingEvents: plainEvents };
+}
+
+export default async function SellPage() {
+  const { items, ongoingEvents } = await getData();
+
+  if (items.length === 0) {
+    return (
+      <div className="text-center py-20">
+        <h1 className="text-3xl font-bold text-gray-800 mb-4">Sell Scrap</h1>
+        <p className="text-gray-600">No scrap items available for collection right now.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      <h1 className="text-3xl font-bold text-gray-800 mb-8 text-center">Sell Your Scrap</h1>
+      <p className="text-center text-gray-600 mb-10">
+        Select items, enter quantity estimate, and schedule a free pickup. Final payout based on actual weight.
+      </p>
+
+      <SellScrapForm items={items} ongoingEvents={ongoingEvents} />
+    </div>
+  );
+}
+
+
+src/app/sell/success/page.tsx
+========================================
+FILE: src/app/sell/success/page.tsx
+========================================
+// src/app/sell/success/page.tsx
+import Link from "next/link";
+
+export default function SuccessPage({
+  searchParams,
+}: {
+  searchParams: { trackingId: string };
+}) {
+  const trackingId = searchParams.trackingId || "unknown";
+
+  return (
+    <div className="max-w-2xl mx-auto text-center py-20">
+      <div className="bg-green-100 rounded-full w-20 h-20 mx-auto mb-8 flex items-center justify-center">
+        <span className="text-4xl">âœ“</span>
+      </div>
+
+      <h1 className="text-4xl font-bold text-gray-800 mb-6">
+        Pickup Request Received!
+      </h1>
+
+      <p className="text-xl text-gray-600 mb-8">
+        Your tracking ID: <span className="font-bold text-green-700">{trackingId}</span>
+      </p>
+
+      <p className="text-gray-600 mb-10">
+        Our rep will contact you soon to confirm the pickup. Final payout will be based on actual weight.
+      </p>
+
+      <Link
+        href="/track"
+        className="inline-block bg-green-600 text-white px-8 py-4 rounded-lg text-lg font-semibold hover:bg-green-700"
+      >
+        Track Your Order
+      </Link>
+
+      <div className="mt-10">
+        <Link href="/" className="text-blue-600 hover:underline">
+          â† Back to Home
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+
+src/app/track/page.tsx
+========================================
+FILE: src/app/track/page.tsx
+========================================
+// src/app/track/page.tsx
+import TrackOrderForm from "@/components/TrackOrderForm";
+
+export default function TrackPage() {
+  return (
+    <div className="max-w-2xl mx-auto">
+      <h1 className="text-3xl font-bold text-gray-800 mb-8 text-center">Track Your Order</h1>
+      <p className="text-center text-gray-600 mb-10">
+        Enter your tracking ID to see the current status and timeline.
+      </p>
+
+      <TrackOrderForm />
+    </div>
+  );
+}
+
+
+src/app/track/[trackingId]/page.tsx
+========================================
+FILE: src/app/track/[trackingId]/page.tsx
+========================================
+// src/app/track/[trackingId]/page.tsx
+import { prisma } from "@/lib/prisma";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+
+async function getOrder(trackingId: string) {
+  return prisma.order.findUnique({
+    where: { publicId: trackingId },
+    include: {
+      ngo: true,
+      items: {
+        include: {
+          scrapItem: true,
+        },
+      },
+    },
+  });
+}
+
+export default async function TrackResultPage({
+  params,
+}: {
+  params: { trackingId: string };
+}) {
+  const order = await getOrder(params.trackingId.toUpperCase());
+
+  if (!order) {
+    notFound();
+  }
+
+  const statusOrder = ["CREATED", "ASSIGNED", "PICKED_UP", "WEIGHED", "COMPLETED", "CANCELLED"] as const;
+  const currentIndex = statusOrder.indexOf(order.status);
+  const isCancelled = order.status === "CANCELLED";
+
+  const timeline = statusOrder.map((status) => ({
+    status,
+    completed: isCancelled ? status === "CANCELLED" : statusOrder.indexOf(status) <= currentIndex,
+  }));
+
+  return (
+    <div className="max-w-4xl mx-auto space-y-8 py-10">
+      {/* Header */}
+      <div className="bg-white rounded-lg shadow-lg p-8 text-center">
+        <p className="text-sm text-gray-600">Tracking ID</p>
+        <p className="text-4xl font-bold text-green-700 mb-6">{order.publicId}</p>
+        <p className="text-2xl font-semibold">
+          Current Status: <span className={isCancelled ? "text-red-600" : "text-green-600"}>
+            {order.status.replace("_", " ")}
+          </span>
+        </p>
+
+        {order.type === "DONATION" && order.ngo && (
+          <div className="mt-8">
+            <p className="text-lg text-gray-700">Donated to:</p>
+            <p className="text-3xl font-bold text-green-700">{order.ngo.name}</p>
+            {order.ngo.description && <p className="text-gray-600 mt-3 max-w-2xl mx-auto">{order.ngo.description}</p>}
+          </div>
+        )}
+      </div>
+
+      {/* Timeline */}
+      <div className="bg-white rounded-lg shadow-lg p-8">
+        <h2 className="text-2xl font-semibold mb-8 text-center">Status Timeline</h2>
+        <div className="space-y-6">
+          {timeline.map((step, index) => (
+            <div key={step.status} className="flex items-center gap-6">
+              <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white font-bold text-lg ${step.completed ? "bg-green-600" : "bg-gray-300"}`}>
+                {step.completed ? "âœ“" : index + 1}
+              </div>
+              <div className="flex-1 pb-8 relative">
+                <p className={`text-xl font-medium ${step.completed ? "text-gray-800" : "text-gray-400"}`}>
+                  {step.status.replace("_", " ")}
+                </p>
+                {index < timeline.length - 1 && (
+                  <div className="absolute left-6 top-12 bottom-0 w-1 bg-gray-300" />
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Details Grid */}
+      <div className="grid md:grid-cols-2 gap-8">
+        <div className="bg-white rounded-lg shadow-lg p-8">
+          <h3 className="text-2xl font-semibold mb-6">Pickup Details</h3>
+          <div className="space-y-3 text-lg">
+            <p><strong>Date:</strong> {new Date(order.pickupDate).toLocaleDateString()}</p>
+            <p><strong>Contact:</strong> {order.contactName}</p>
+            <p><strong>Phone:</strong> {order.contactPhone}</p>
+            <p><strong>Address:</strong> {order.pickupAddress}</p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-lg shadow-lg p-8">
+          <h3 className="text-2xl font-semibold mb-6">Items</h3>
+          <ul className="space-y-3 text-lg">
+            {order.items.map((item) => (
+              <li key={item.id}>
+                <strong>{item.scrapItem.name}:</strong> {item.estimatedQty.toString()} {item.scrapItem.unit}
+                {item.actualQty && (
+                  <span className="text-green-600 ml-2">
+                    â†’ {item.actualQty.toString()} {item.scrapItem.unit} (actual)
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </div>
+
+      <div className="text-center mt-10">
+        <Link href="/track" className="text-blue-600 hover:underline text-lg">
+          â† Track Another Order
+        </Link>
+      </div>
+    </div>
+  );
+}
+
+
+src/app/vehicle/page.tsx
+========================================
+FILE: src/app/vehicle/page.tsx
+========================================
+// src/app/vehicle/page.tsx
+import VehicleScrapForm from "@/components/VehicleScrapForm";
+
+export default function VehiclePage() {
+  return (
+    <div className="max-w-2xl mx-auto">
+      <h1 className="text-3xl font-bold text-gray-800 mb-8 text-center">Sell Your Old Vehicle</h1>
+      <p className="text-center text-gray-600 mb-10">
+        Get the best price for your car, bike, or truck. We collect end-of-life vehicles for responsible recycling.
+      </p>
+
+      <VehicleScrapForm />
+    </div>
+  );
+}
+
+
+src/app/vehicle/success/page.tsx
+========================================
+FILE: src/app/vehicle/success/page.tsx
+========================================
+// src/app/vehicle/success/page.tsx
+export default function VehicleSuccessPage({
+  searchParams,
+}: {
+  searchParams: { leadId: string };
+}) {
+  const leadId = searchParams.leadId || "unknown";
+
+  return (
+    <div className="max-w-2xl mx-auto text-center py-20">
+      <div className="bg-green-100 rounded-full w-20 h-20 mx-auto mb-8 flex items-center justify-center">
+        <span className="text-4xl">âœ“</span>
+      </div>
+
+      <h1 className="text-4xl font-bold text-gray-800 mb-6">Lead Submitted!</h1>
+
+      <p className="text-xl text-gray-600 mb-4">
+        Your lead ID: <span className="font-bold text-green-700">{leadId}</span>
+      </p>
+
+      <p className="text-gray-600 mb-10">
+        Our team will review your vehicle and contact you with the best offer and free pickup schedule.
+      </p>
+
+      <a href="/" className="inline-block bg-green-600 text-white px-8 py-4 rounded-lg text-lg font-semibold hover:bg-green-700">
+        Back to Home
+      </a>
+    </div>
+  );
+}
+
+
+src/components/AdminEventList.tsx
+========================================
+FILE: src/components/AdminEventList.tsx
+========================================
+// src/components/AdminEventList.tsx
+"use server";
+
+import { prisma } from "@/lib/prisma";
+import { revalidatePath } from "next/cache";
+
+async function markCompleted(id: string) {
+  "use server";
+
+  await prisma.event.update({
+    where: { id },
+    data: { status: "COMPLETED" },
+  });
+
+  revalidatePath("/admin/ecochamp");
+}
+
+export default async function AdminEventList({ events }: { events: any[] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left">
+        <thead className="bg-gray-100">
+          <tr>
+            <th className="p-4">Event</th>
+            <th className="p-4">School</th>
+            <th className="p-4">Type</th>
+            <th className="p-4">NGO</th>
+            <th className="p-4">Status</th>
+            <th className="p-4">Participants</th>
+            <th className="p-4">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          {events.map((event) => (
+            <tr key={event.id} className="border-t">
+              <td className="p-4">
+                <div className="font-medium">{event.name}</div>
+                <div className="text-sm text-gray-600">
+                  {new Date(event.startDate).toLocaleDateString()} - {new Date(event.endDate).toLocaleDateString()}
+                </div>
+              </td>
+              <td className="p-4">{event.school.name}</td>
+              <td className="p-4">{event.type}</td>
+              <td className="p-4">{event.ngo ? event.ngo.name : "-"}</td>
+              <td className="p-4">
+                <span className={`px-3 py-1 rounded-full text-sm ${event.status === "COMPLETED" ? "bg-teal-100 text-teal-800" : "bg-blue-100 text-blue-800"}`}>
+                  {event.status}
+                </span>
+              </td>
+              <td className="p-4">{event.orders.length}</td>
+              <td className="p-4">
+                {event.status === "ONGOING" && (
+                  <form action={markCompleted.bind(null, event.id)}>
+                    <button type="submit" className="text-green-600 hover:underline">
+                      Mark Completed
+                    </button>
+                  </form>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+
+src/components/CertificatePDF.tsx
+========================================
+FILE: src/components/CertificatePDF.tsx
+========================================
+// src/components/CertificatePDF.tsx
+import { Document, Page, Text, View, StyleSheet, Image } from "@react-pdf/renderer";
+
+const styles = StyleSheet.create({
+  page: {
+    backgroundColor: "#ffffff",
+    paddingHorizontal: 20,
+    paddingTop: 10,     // Even more reduced top padding
+    paddingBottom: 10,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "center",
+  },
+  container: {
+    width: "100%",
+    textAlign: "center",
+  },
+  logo: {
+    width: 200,         // Smaller logo to save space
+    height: 100,
+    marginBottom: 0,
+    marginTop : 10,
+    alignSelf: "center",
+  },
+  title: {
+    fontSize: 38,
+    fontFamily: "Helvetica-Bold",
+    color: "#1e293b",
+    marginBottom: 10,
+    letterSpacing: 1,
+  },
+  subtitle: {
+    fontSize: 26,
+    fontFamily: "Helvetica-Bold",
+    color: "#10b981",
+    marginBottom: 10,
+  },
+  body: {
+    fontSize: 18,
+    fontFamily: "Helvetica",
+    lineHeight: 1.4,
+    marginBottom: 20,
+  },
+  name: {
+    fontSize: 42,
+    fontFamily: "Times-Italic",
+    color: "#1e40af",
+    marginVertical: 10,
+  },
+  footer: {
+    marginTop: 15,
+    fontSize: 14,
+    fontFamily: "Helvetica",
+    color: "#64748b",
+  },
+  border: {
+    position: "absolute",
+    top: 10,
+    left: 10,
+    right: 10,
+    bottom: 10,
+    border: "3px double #10b981",
+    borderRadius: 5,
+  },
+});
+
+type Props = {
+  event: {
+    name: string;
+    type: "SELL" | "DONATION";
+    date: Date | null;
+    ngo: { name: string } | null;
+    school: { name: string };
+  };
+  studentName: string;
+};
+
+export default function CertificatePDF({ event, studentName }: Props) {
+  const completionDate = event.date
+    ? new Date(event.date).toLocaleDateString("en-US", {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+      })
+    : "Date TBD";
+
+  return (
+    <Document>
+      <Page size="A4" orientation="landscape" style={styles.page}>
+        <View style={styles.border} />
+
+        <View style={styles.container}>
+          <Image style={styles.logo} src="/logo.jpg" />
+
+          <Text style={styles.title}>Certificate of Participation</Text>
+          <Text style={styles.subtitle}>EcoChamp</Text>
+
+          <View style={styles.body}>
+            <Text>This certifies that</Text>
+            <Text style={styles.name}>{studentName}</Text>
+            <Text style={{ marginTop: 15 }}>has successfully participated in</Text>
+            <Text style={{ fontSize: 30, marginVertical: 8 }}>{event.name}</Text>
+            <Text>organized by</Text>
+            <Text style={{ fontSize: 26, marginVertical: 6 }}>{event.school.name}</Text>
+            {event.ngo && (
+              <Text style={{ marginVertical: 6 }}>
+                and contributed scrap for the benefit of <Text style={{ fontWeight: "bold" }}>{event.ngo.name}</Text>
+              </Text>
+            )}
+            <Text style={{ marginTop: 15 }}>
+              Completed on {completionDate}
+            </Text>
+          </View>
+
+          <View style={styles.footer}>
+            <Text>Thank you for making a difference!</Text>
+            <Text>SocietySalvor EcoChamp Program</Text>
+          </View>
+        </View>
+      </Page>
+    </Document>
+  );
+}
+
+
+src/components/ClientNavbar.tsx
+========================================
+FILE: src/components/ClientNavbar.tsx
+========================================
+// src/components/ClientNavbar.tsx
+"use client";
+
+import Link from "next/link";
+import { logout } from "@/actions/authActions";
+import { Menu, X } from "lucide-react";
+import { useState } from "react";
+
+type Props = {
+  initialRole: string;
+  initialUser: { id: string; role: string } | null;
+};
+
+export default function ClientNavbar({ initialRole, initialUser }: Props) {
+  const [isOpen, setIsOpen] = useState(false);
+  const role = initialRole;
+  const user = initialUser;
+
+  return (
+    <nav className="bg-green-700 text-white shadow-lg sticky top-0 z-50">
+      <div className="container mx-auto px-4">
+        <div className="flex items-center justify-between h-16">
+          <Link href="/" className="text-xl font-bold">
+            SocietySalvor
+          </Link>
+
+          {/* Desktop Menu */}
+          <div className="hidden md:flex items-center gap-6">
+            {role === "GUEST" && (
+              <>
+                <Link href="/sell" className="hover:underline">Sell Scrap</Link>
+                <Link href="/donate" className="hover:underline">Donate Scrap</Link>
+                <Link href="/vehicle" className="hover:underline">Sell Vehicle</Link>
+                <Link href="/track" className="hover:underline">Track Order</Link>
+              </>
+            )}
+
+            {role === "ADMIN" && (
+              <>
+                <Link href="/admin" className="hover:underline">Admin Dashboard</Link>
+                <Link href="/admin/scrap-items" className="hover:underline">Scrap Items</Link>
+              </>
+            )}
+            {role === "SCHOOL" && (
+            <>
+            <Link href="/ecochamp/school" className="hover:underline">School Dashboard</Link>
+            <Link href="/ecochamp/school/events" className="hover:underline">My Events</Link>
+            </>
+            )}
+            {role === "NGO" && (
+  <>
+    <Link href="/ngo/dashboard" className="hover:underline">NGO Dashboard</Link>
+    <Link href="/ngo/profile" className="hover:underline">My Profile</Link>
+  </>
+)}
+
+            {role === "STUDENT" && (
+            <>
+                <Link href="/ecochamp/student" className="hover:underline">My Dashboard</Link>
+                <Link href="/ecochamp/student/upcoming" className="hover:underline">Upcoming Events</Link>
+                <Link href="/ecochamp/student/participated" className="hover:underline">Participated Events & Certificates</Link>
+            </>
+            )}
+
+            {role === "REP" && (
+  <>
+    <Link href="/rep/dashboard" className="hover:underline">Assigned Pickups</Link>
+  </>
+)}
+            {user && (
+            <form action={logout}>
+                <button type="submit" className="hover:underline">
+                Logout ({role === "SCHOOL" ? "School" : role === "STUDENT" ? "Student" : "Admin"})
+                </button>
+            </form>
+            )}
+          </div>
+
+          {/* Mobile Menu */}
+          <div className="md:hidden">
+            <button
+              onClick={() => setIsOpen(!isOpen)}
+              className="p-2 focus:outline-none"
+              aria-label="Toggle menu"
+            >
+              {isOpen ? <X size={28} /> : <Menu size={28} />}
+            </button>
+          </div>
+        </div>
+
+        {/* Mobile Dropdown */}
+        {isOpen && (
+          <div className="md:hidden bg-green-700 border-t border-green-600">
+            <div className="flex flex-col items-center gap-4 py-4">
+              {role === "GUEST" && (
+                <>
+                  <Link href="/sell" className="text-lg hover:underline" onClick={() => setIsOpen(false)}>
+                    Sell Scrap
+                  </Link>
+                  <Link href="/donate" className="text-lg hover:underline" onClick={() => setIsOpen(false)}>
+                    Donate Scrap
+                  </Link>
+                  
+                  <Link href="/vehicle" className="text-lg hover:underline" onClick={() => setIsOpen(false)}>
+                    Sell Vehicle
+                  </Link>
+                  <Link href="/track" className="text-lg hover:underline" onClick={() => setIsOpen(false)}>
+                    Track Order
+                  </Link>
+                </>
+              )}
+
+              {role === "ADMIN" && (
+                <>
+                  <Link href="/admin" className="text-lg hover:underline" onClick={() => setIsOpen(false)}>
+                    Admin Dashboard
+                  </Link>
+                  <Link href="/admin/scrap-items" className="text-lg hover:underline" onClick={() => setIsOpen(false)}>
+                    Scrap Items
+                  </Link>
+                </>
+              )}
+            {role === "SCHOOL" && (
+            <>
+                <Link href="/ecochamp/school" className="text-lg hover:underline" onClick={() => setIsOpen(false)}>
+                School Dashboard
+                </Link>
+                <Link href="/ecochamp/school/events" className="text-lg hover:underline" onClick={() => setIsOpen(false)}>
+                Manage Events
+                </Link>
+            </>
+            )}
+            {role === "NGO" && (
+            <>
+              <Link href="/ngo/dashboard" className="block hover:underline">NGO Dashboard</Link>
+              <button onClick={logout} className="block hover:underline">Logout (NGO)</button>
+            </>
+          )}
+          {role === "REP" && (
+            <>
+              <Link href="/rep/dashboard" className="block hover:underline">Assigned Pickups</Link>
+              <button onClick={logout} className="block hover:underline">Logout (Rep)</button>
+            </>
+          )}
+              {user && (
+                <form action={logout} className="mt-2">
+                  <button
+                    type="submit"
+                    className="text-lg hover:underline"
+                    onClick={() => setIsOpen(false)}
+                  >
+                    Logout (Admin)
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </nav>
+  );
+}
+
+
+src/components/CreateNGOButton.tsx
+========================================
+FILE: src/components/CreateNGOButton.tsx
+========================================
+// src/components/CreateNGOButton.tsx
+"use client";
+
+import { useState } from "react";
+import NGOForm from "@/components/NGOForm";
+import { toast } from "react-toastify";
+
+export default function CreateNGOButton() {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <>
+      <button
+        onClick={() => setIsOpen(true)}
+        className="bg-green-600 text-white px-8 py-4 rounded-lg text-xl font-semibold hover:bg-green-700"
+      >
+        Create New NGO
+      </button>
+
+      {isOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={() => setIsOpen(false)}>
+          <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto p-8" onClick={(e) => e.stopPropagation()}>
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-3xl font-bold">Create New NGO</h2>
+              <button
+                onClick={() => setIsOpen(false)}
+                className="text-gray-500 hover:text-gray-700 text-4xl leading-none"
+              >
+                Ã—
+              </button>
+            </div>
+
+            <NGOForm onSuccess={() => {
+              setIsOpen(false);
+              toast.success("NGO created successfully!");
+              window.location.reload();
+            }} />
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+
+src/components/DonateScrapForm.tsx
+========================================
+FILE: src/components/DonateScrapForm.tsx
+========================================
+// src/components/DonateScrapForm.tsx
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { createDonateOrder } from "@/actions/orderActions";
+
+type ScrapItem = {
+  id: string;
+  name: string;
+  unit: "KG" | "PIECE";
+  basePrice: number;
+};
+
+type NGO = {
+  id: string;
+  name: string;
+  description: string | null;
+};
+
+type Props = {
+  items: ScrapItem[];
+  ngos: NGO[];
+};
+
+export default function DonateScrapForm({ items, ngos }: Props) {
+  const router = useRouter();
+  const [loading, setLoading] = useState(false);
+  const [selectedNGO, setSelectedNGO] = useState<string>("");
+  const [selectedItems, setSelectedItems] = useState<
+    { itemId: string; quantity: number }[]
+  >([]);
+
+  const handleQuantityChange = (itemId: string, qty: string) => {
+    const quantity = parseFloat(qty) || 0;
+    if (quantity === 0) {
+      setSelectedItems(selectedItems.filter((i) => i.itemId !== itemId));
+    } else {
+      setSelectedItems((prev) => {
+        const existing = prev.find((i) => i.itemId === itemId);
+        if (existing) {
+          return prev.map((i) => (i.itemId === itemId ? { ...i, quantity } : i));
+        }
+        return [...prev, { itemId, quantity }];
+      });
+    }
+  };
+
+  async function handleSubmit(formData: FormData) {
+    if (!selectedNGO) {
+      alert("Please select an NGO");
+      return;
+    }
+    if (selectedItems.length === 0) {
+      alert("Please select at least one item");
+      return;
+    }
+
+    setLoading(true);
+    formData.append("ngoId", selectedNGO);
+
+    selectedItems.forEach((si, index) => {
+      formData.append(`items[${index}][itemId]`, si.itemId);
+      formData.append(`items[${index}][quantity]`, si.quantity.toString());
+    });
+
+    const result = await createDonateOrder(formData);
+
+    if (result.success) {
+      router.push(`/donate/success?trackingId=${result.publicId}&ngo=${selectedNGO}`);
+    } else {
+      alert(result.error || "Submission failed");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form action={handleSubmit} className="space-y-8">
+      {/* NGO Selection */}
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <h2 className="text-2xl font-semibold mb-6">Choose NGO</h2>
+        <select
+          value={selectedNGO}
+          onChange={(e) => setSelectedNGO(e.target.value)}
+          required
+          className="w-full px-4 py-3 border rounded-lg text-lg"
+        >
+          <option value="">Select an NGO</option>
+          {ngos.map((ngo) => (
+            <option key={ngo.id} value={ngo.id}>
+              {ngo.name}
+            </option>
+          ))}
+        </select>
+        {selectedNGO && ngos.find(n => n.id === selectedNGO)?.description && (
+          <p className="mt-3 text-gray-600">
+            {ngos.find(n => n.id === selectedNGO)?.description}
+          </p>
+        )}
+      </div>
+
+      {/* Scrap Items (same as Sell) */}
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <h2 className="text-2xl font-semibold mb-6">Select Scrap Items</h2>
+        <div className="space-y-4">
+          {items.map((item) => (
+            <div key={item.id} className="border rounded-lg p-4">
+              <h3 className="font-medium text-lg">{item.name}</h3>
+              <input
+                type="number"
+                min="0"
+                step={item.unit === "KG" ? "0.5" : "1"}
+                placeholder={`Estimated ${item.unit === "KG" ? "kg" : "pieces"}`}
+                className="w-full px-4 py-3 border rounded-lg text-lg mt-2"
+                onChange={(e) => handleQuantityChange(item.id, e.target.value)}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Pickup Details */}
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <h2 className="text-2xl font-semibold mb-6">Pickup Details</h2>
+        <div className="space-y-4">
+          <input name="contactName" type="text" placeholder="Full Name" required className="w-full px-4 py-3 border rounded-lg" />
+          <input name="contactPhone" type="tel" placeholder="Phone Number" required className="w-full px-4 py-3 border rounded-lg" />
+          <textarea name="pickupAddress" placeholder="Full Address" rows={4} required className="w-full px-4 py-3 border rounded-lg" />
+          <input
+            name="pickupDate"
+            type="date"
+            min={new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]}
+            required
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+        </div>
+      </div>
+
+      <button
+        type="submit"
+        disabled={loading || !selectedNGO || selectedItems.length === 0}
+        className="w-full bg-green-600 text-white py-5 rounded-lg text-xl font-semibold hover:bg-green-700 disabled:bg-gray-400"
+      >
+        {loading ? "Submitting..." : "Schedule Donation Pickup"}
+      </button>
+    </form>
+  );
+}
+
+
+src/components/EventForm.tsx
+========================================
+FILE: src/components/EventForm.tsx
+========================================
+// src/components/EventForm.tsx
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "react-toastify";
+import { createEvent } from "@/actions/eventActions";
+
+type NGO = {
+  id: string;
+  name: string;
+};
+
+type Props = {
+  ngos: NGO[];
+};
+
+export default function EventForm({ ngos }: Props) {
+  const router = useRouter();
+  const [loading, setLoading] = useState(false);
+  const [type, setType] = useState<"SELL" | "DONATION">("SELL");
+
+  const minDate = new Date().toISOString().split("T")[0];
+
+  async function handleSubmit(formData: FormData) {
+    setLoading(true);
+
+    const result = await createEvent(formData);
+
+    if (result.success) {
+      toast.success("Event created successfully!");
+      router.push("/ecochamp/school/events");
+      router.refresh();
+    } else {
+      toast.error(result.error || "Failed to create event");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form action={handleSubmit} className="space-y-6 bg-white rounded-lg shadow-lg p-8">
+      <input
+        name="name"
+        placeholder="Event Name (e.g., Eco Drive 2026)"
+        required
+        className="w-full px-4 py-3 border rounded-lg"
+      />
+
+      <select
+        name="type"
+        value={type}
+        onChange={(e) => setType(e.target.value as "SELL" | "DONATION")}
+        className="w-full px-4 py-3 border rounded-lg"
+      >
+        <option value="SELL">Sell Scrap</option>
+        <option value="DONATION">Donate Scrap</option>
+      </select>
+
+      <input
+        name="date"
+        type="date"
+        min={minDate}
+        required
+        className="w-full px-4 py-3 border rounded-lg"
+      />
+
+      {type === "DONATION" && (
+        <select name="ngoId" className="w-full px-4 py-3 border rounded-lg">
+          <option value="">Select NGO (optional)</option>
+          {ngos.map((ngo) => (
+            <option key={ngo.id} value={ngo.id}>
+              {ngo.name}
+            </option>
+          ))}
+        </select>
+      )}
+
+      <button
+        type="submit"
+        disabled={loading}
+        className="w-full bg-green-600 text-white py-4 rounded-lg text-xl font-semibold hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+      >
+        {loading ? "Creating..." : "Create Event"}
+      </button>
+    </form>
+  );
+}
+
+
+src/components/JoinEventButton.tsx
+========================================
+FILE: src/components/JoinEventButton.tsx
+========================================
+// src/components/JoinEventButton.tsx
+"use client";
+
+import { useState } from "react";
+import { toast } from "react-toastify";
+
+type Props = {
+  eventId: string;
+  joined: boolean;
+};
+
+export default function JoinEventButton({ eventId, joined }: Props) {
+  const [loading, setLoading] = useState(false);
+
+  async function handleJoin() {
+    setLoading(true);
+
+    const res = await fetch("/api/ecochamp/join-event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ eventId }),
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      toast.success("Successfully joined the event!");
+      window.location.reload();
+    } else {
+      toast.error(data.error || "Failed to join");
+      setLoading(false);
+    }
+  }
+
+  if (joined) {
+    return <p className="text-green-600 font-bold text-center text-xl">Already Joined!</p>;
+  }
+
+  return (
+    <button
+      onClick={handleJoin}
+      disabled={loading}
+      className="w-full bg-green-600 text-white py-4 rounded-lg text-xl font-semibold hover:bg-green-700 disabled:bg-gray-400"
+    >
+      {loading ? "Joining..." : "Join Event"}
+    </button>
+  );
+}
+
+
+src/components/Navbar.tsx
+========================================
+FILE: src/components/Navbar.tsx
+========================================
+// src/components/Navbar.tsx
+import Link from "next/link";
+import { cookies } from "next/headers";
+import { logout } from "@/actions/authActions";
+import ClientNavbar from "@/components/ClientNavbar";
+
+async function getSession() {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("auth-token")?.value;
+
+  if (!token) {
+    return { user: null, role: "GUEST" };
+  }
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    return { user: { id: payload.userId, role: payload.role }, role: payload.role };
+  } catch {
+    return { user: null, role: "GUEST" };
+  }
+}
+
+async function ServerNavbar() {
+  const { user, role } = await getSession();
+
+  return <ClientNavbar initialRole={role} initialUser={user} />;
+}
+
+export default async function Navbar() {
+  return <ServerNavbar />;
+}
+
+
+src/components/NGOForm.tsx
+========================================
+FILE: src/components/NGOForm.tsx
+========================================
+// src/components/NGOForm.tsx
+"use client";
+
+import { useState } from "react";
+import { toast } from "react-toastify";
+
+type Props = {
+  ngo?: any; // for edit
+  onSuccess?: () => void;
+};
+
+export default function NGOForm({ ngo, onSuccess }: Props) {
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(formData: FormData) {
+    setLoading(true);
+
+    const res = await fetch(ngo ? `/api/ngo/${ngo.id}` : "/api/ngo", {
+      method: ngo ? "PATCH" : "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      toast.success(ngo ? "NGO updated!" : "NGO created!");
+      onSuccess?.();
+    } else {
+      toast.error(data.error || "Failed");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form action={handleSubmit} className="space-y-6">
+      <input name="name" defaultValue={ngo?.name} placeholder="NGO Name" required className="w-full px-4 py-3 border rounded-lg" />
+      <textarea
+        name="description"
+        defaultValue={ngo?.description}
+        placeholder="Description"
+        rows={4}
+        required
+        className="w-full px-4 py-3 border rounded-lg"
+      />
+      <input name="logo" defaultValue={ngo?.logo || ""} placeholder="Logo URL" className="w-full px-4 py-3 border rounded-lg" />
+      <input name="website" defaultValue={ngo?.website || ""} placeholder="Website" className="w-full px-4 py-3 border rounded-lg" />
+      <input name="registrationNumber" defaultValue={ngo?.registrationNumber} placeholder="Registration Number" required className="w-full px-4 py-3 border rounded-lg" />
+      <select name="type" defaultValue={ngo?.type} required className="w-full px-4 py-3 border rounded-lg">
+        <option value="TRUST">Trust</option>
+        <option value="SOCIETY">Society</option>
+        <option value="FOUNDATION">Foundation</option>
+        <option value="OTHER">Other</option>
+      </select>
+      <input name="address" defaultValue={ngo?.address} placeholder="Address" required className="w-full px-4 py-3 border rounded-lg" />
+
+      <button
+        type="submit"
+        disabled={loading}
+        className="w-full bg-green-600 text-white py-4 rounded-lg font-semibold hover:bg-green-700 disabled:bg-gray-400"
+      >
+        {loading ? "Saving..." : ngo ? "Update NGO" : "Create NGO"}
+      </button>
+    </form>
+  );
+}
+
+
+src/components/NGOList.tsx
+========================================
+FILE: src/components/NGOList.tsx
+========================================
+// src/components/NGOList.tsx
+"use client";
+
+import { useRouter } from "next/navigation";
+import { toast } from "react-toastify";
+
+type NGO = {
+  id: string;
+  name: string;
+  description: string;
+  status: string;
+};
+
+type Props = {
+  initialNGOs: NGO[];
+};
+
+export default function NGOList({ initialNGOs }: Props) {
+  const router = useRouter();
+
+  async function handleToggle(id: string, currentStatus: string) {
+    const formData = new FormData();
+    formData.append("id", id);
+    formData.append("currentStatus", currentStatus);
+
+    const res = await fetch("/api/ngo/toggle-status", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      toast.success(`NGO ${currentStatus === "APPROVED" ? "suspended" : "approved"}`);
+      router.refresh();
+    } else {
+      toast.error("Failed to update status");
+    }
+  }
+
+  return (
+    <div className="space-y-6">
+      {initialNGOs.map((ngo) => (
+        <div key={ngo.id} className="bg-white rounded-lg shadow p-6 flex justify-between items-center">
+          <div>
+            <h3 className="text-xl font-bold">{ngo.name}</h3>
+            <p className="text-gray-600">{ngo.description}</p>
+            <p className="text-sm text-gray-500 mt-2">
+              Status: <span className={ngo.status === "APPROVED" ? "text-green-600" : "text-red-600"}>{ngo.status}</span>
+            </p>
+          </div>
+
+          <button
+            onClick={() => handleToggle(ngo.id, ngo.status)}
+            className="bg-blue-600 text-white px-6 py-2 rounded hover:bg-blue-700"
+          >
+            {ngo.status === "APPROVED" ? "Suspend" : "Approve"}
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+
+src/components/NGORegisterForm.tsx
+========================================
+FILE: src/components/NGORegisterForm.tsx
+========================================
+// src/components/NGORegisterForm.tsx
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "react-toastify";
+
+export default function NGORegisterForm() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(formData: FormData) {
+    setLoading(true);
+
+    const password = formData.get("password") as string;
+    const confirmPassword = formData.get("confirmPassword") as string;
+
+    if (password !== confirmPassword) {
+      toast.error("Passwords do not match");
+      setLoading(false);
+      return;
+    }
+
+    const res = await fetch("/api/ngo/register", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      toast.success("NGO registration successful! Awaiting admin approval.");
+      router.push("/ngo/login");
+    } else {
+      toast.error(data.error || "Registration failed");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form action={handleSubmit} className="bg-white rounded-lg shadow-lg p-8 space-y-6 max-w-2xl mx-auto">
+      <h2 className="text-2xl font-bold mb-6">NGO Registration</h2>
+
+      {/* NGO Public Identity */}
+      <input name="name" placeholder="NGO Display Name" required className="w-full px-4 py-3 border rounded-lg" />
+      <textarea name="description" placeholder="Short Description (2â€“3 lines)" rows={4} required className="w-full px-4 py-3 border rounded-lg" />
+      <input name="logo" placeholder="Logo URL (optional)" className="w-full px-4 py-3 border rounded-lg" />
+      <input name="website" placeholder="Website URL (optional)" className="w-full px-4 py-3 border rounded-lg" />
+
+      {/* NGO Legitimacy */}
+      <input name="registrationNumber" placeholder="NGO Registration Number" required className="w-full px-4 py-3 border rounded-lg" />
+      <select name="type" required className="w-full px-4 py-3 border rounded-lg">
+        <option value="">Select NGO Type</option>
+        <option value="TRUST">Trust</option>
+        <option value="SOCIETY">Society</option>
+        <option value="FOUNDATION">Foundation</option>
+        <option value="OTHER">Other</option>
+      </select>
+      <textarea name="address" placeholder="Registered Address" rows={3} required className="w-full px-4 py-3 border rounded-lg" />
+
+      {/* NGO User Account */}
+      <input name="email" type="email" placeholder="Login Email" required className="w-full px-4 py-3 border rounded-lg" />
+      <input name="phone" type="tel" placeholder="Phone Number" required className="w-full px-4 py-3 border rounded-lg" />
+      <input name="password" type="password" placeholder="Password" required minLength={8} className="w-full px-4 py-3 border rounded-lg" />
+      <input name="confirmPassword" type="password" placeholder="Confirm Password" required className="w-full px-4 py-3 border rounded-lg" />
+
+      <button
+        type="submit"
+        disabled={loading}
+        className="w-full bg-green-600 text-white py-4 rounded-lg text-xl font-semibold hover:bg-green-700 disabled:bg-gray-400"
+      >
+        {loading ? "Submitting..." : "Register NGO"}
+      </button>
+    </form>
+  );
+}
+
+
+src/components/RedirectHandler.tsx
+========================================
+FILE: src/components/RedirectHandler.tsx
+========================================
+// src/components/RedirectHandler.tsx
+import { redirect } from "next/navigation";
+import { cookies, headers } from "next/headers";
+
+async function getRole() {
+  const cookieStore = await cookies();
+  const token = cookieStore.get("auth-token")?.value;
+
+  if (!token) return "GUEST";
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    return payload.role as string;
+  } catch {
+    return "GUEST";
+  }
+}
+
+export async function RedirectHandler() {
+  const role = await getRole();
+
+  const headerList = await headers();
+  const pathname = headerList.get("x-nextjs-url") || 
+                   headerList.get("next-url") || 
+                   "/";
+
+  // Define paths clearly
+  const isOnHomeOrPublicFlow = [
+    "/", "/sell", "/donate", "/track", "/login", "/ngos"
+  ].some(p => pathname.startsWith(p));
+
+  const isOnProtectedDashboard = [
+    "/admin", "/rep", "/school", "/student"
+  ].some(p => pathname.startsWith(p));
+
+  // Rule 1: Logged-in users must not browse public pages â†’ redirect to their dashboard
+  if (role !== "GUEST" && isOnHomeOrPublicFlow) {
+    if (role === "ADMIN") redirect("/admin");
+    if (role === "REP") redirect("/rep");
+    if (role === "SCHOOL") redirect("/school");
+    if (role === "STUDENT") redirect("/student");
+    redirect("/"); // fallback
+  }
+
+  // Rule 2: Guests must not access protected dashboards â†’ redirect to home
+  if (role === "GUEST" && isOnProtectedDashboard) {
+    redirect("/");
+  }
+
+  // If we're here, no redirect needed
+  return null;
+}
+
+
+src/components/RepForm.tsx
+========================================
+FILE: src/components/RepForm.tsx
+========================================
+// src/components/RepForm.tsx
+"use client";
+
+import { useState } from "react";
+import { toast } from "react-toastify";
+
+export default function RepForm() {
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(formData: FormData) {
+    setLoading(true);
+
+    const password = formData.get("password") as string;
+    const confirm = formData.get("confirmPassword") as string;
+
+    if (password !== confirm) {
+      toast.error("Passwords do not match");
+      setLoading(false);
+      return;
+    }
+
+    const res = await fetch("/api/rep/create", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      toast.success("Rep created successfully!");
+      window.location.reload();
+    } else {
+      toast.error(data.error || "Failed");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form action={handleSubmit} className="bg-white rounded-lg shadow p-8 space-y-6 max-w-lg">
+      <input name="name" placeholder="Full Name" required className="w-full px-4 py-3 border rounded-lg" />
+      <input name="email" type="email" placeholder="Email (login)" required className="w-full px-4 py-3 border rounded-lg" />
+      <input name="phone" type="tel" placeholder="Phone" required className="w-full px-4 py-3 border rounded-lg" />
+      <input name="password" type="password" placeholder="Password" required minLength={8} className="w-full px-4 py-3 border rounded-lg" />
+      <input name="confirmPassword" type="password" placeholder="Confirm Password" required className="w-full px-4 py-3 border rounded-lg" />
+
+      <button
+        type="submit"
+        disabled={loading}
+        className="w-full bg-green-600 text-white py-4 rounded-lg font-semibold hover:bg-green-700 disabled:bg-gray-400"
+      >
+        {loading ? "Creating..." : "Create Rep"}
+      </button>
+    </form>
+  );
+}
+
+
+src/components/SchoolEventList.tsx
+========================================
+FILE: src/components/SchoolEventList.tsx
+========================================
+// src/components/StudentEventList.tsx
+"use client";
+
+import { PDFDownloadLink } from "@react-pdf/renderer";
+import CertificatePDF from "@/components/CertificatePDF";
+
+type Event = {
+  id: string;
+  name: string;
+  type: "SELL" | "DONATION";
+  date: Date | null;
+  ngo: { name: string } | null;
+  school: { name: string };
+};
+
+type Props = {
+  events: Event[];
+};
+
+export default function StudentEventList({ events }: Props) {
+  const studentName = "John Doe"; // Replace with real name from session later
+
+  if (events.length === 0) {
+    return (
+      <p className="text-center text-gray-500 py-12">
+        No completed events with participation yet. Join an ongoing event!
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid md:grid-cols-2 gap-8">
+      {events.map((event) => (
+        <div key={event.id} className="bg-white rounded-lg shadow-lg p-8 text-center">
+          <h3 className="text-2xl font-bold mb-4">{event.name}</h3>
+          <p className="text-gray-600 mb-2">
+            {event.school.name} â€¢ {event.date ? new Date(event.date).toLocaleDateString() : "Date TBD"}
+          </p>
+          {event.ngo && <p className="text-green-700 font-medium mb-6">Donated to {event.ngo.name}</p>}
+
+          <PDFDownloadLink
+            document={<CertificatePDF event={event} studentName={studentName} />}
+            fileName={`EcoChamp-${event.name.replace(/\s+/g, "-")}.pdf`}
+          >
+            {({ loading }) => (
+              <button className="bg-green-600 text-white px-8 py-4 rounded-lg text-lg font-semibold hover:bg-green-700">
+                {loading ? "Generating..." : "Download Certificate"}
+              </button>
+            )}
+          </PDFDownloadLink>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+
+src/components/SchoolForm.tsx
+========================================
+FILE: src/components/SchoolForm.tsx
+========================================
+// src/components/SchoolForm.tsx
+"use server";
+
+import { prisma } from "@/lib/prisma";
+import { hashPassword } from "@/lib/auth";
+import { revalidatePath } from "next/cache";
+
+export default async function SchoolForm() {
+  async function createSchool(formData: FormData) {
+    "use server";
+
+    const name = formData.get("name") as string;
+    const address = formData.get("address") as string;
+    const contactName = formData.get("contactName") as string;
+    const contactPhone = formData.get("contactPhone") as string;
+    const email = formData.get("email") as string;
+    const password = formData.get("password") as string;
+
+    const schoolCode = "ECO-" + Math.random().toString(36).substring(2, 10).toUpperCase();
+
+    const hashed = await hashPassword(password);
+
+    const school = await prisma.school.create({
+      data: {
+        name,
+        address: address || null,
+        contact: contactName,
+        code: schoolCode,
+      },
+    });
+
+    await prisma.user.create({
+      data: {
+        email,
+        password: hashed,
+        name: contactName,
+        phone: contactPhone || null,
+        role: "SCHOOL",
+        schoolId: school.id,
+      },
+    });
+
+    revalidatePath("/admin/schools");
+  }
+
+  return (
+    <form action={createSchool} className="grid md:grid-cols-2 gap-4">
+      <input name="name" placeholder="School Name" required className="px-4 py-2 border rounded-lg" />
+      <input name="address" placeholder="School Address" className="px-4 py-2 border rounded-lg md:col-span-2" />
+      <input name="contactName" placeholder="Contact Person Name" required className="px-4 py-2 border rounded-lg" />
+      <input name="contactPhone" placeholder="Contact Phone" className="px-4 py-2 border rounded-lg" />
+      <input name="email" type="email" placeholder="Login Email for School" required className="px-4 py-2 border rounded-lg" />
+      <input name="password" type="password" placeholder="Password for School Login" required className="px-4 py-2 border rounded-lg" />
+
+      <button type="submit" className="md:col-span-2 bg-green-600 text-white px-6 py-3 rounded-lg hover:bg-green-700">
+        Create School & Generate Code
+      </button>
+    </form>
+  );
+}
+
+
+src/components/SchoolList.tsx
+========================================
+FILE: src/components/SchoolList.tsx
+========================================
+// src/components/SchoolList.tsx
+"use server";
+
+type SchoolWithUsers = {
+  id: string;
+  name: string;
+  address: string | null;
+  contact: string | null;
+  code: string;
+  createdAt: Date;
+  users: {
+    email: string;
+    name: string | null;
+  }[];
+};
+
+type Props = {
+  initialSchools: SchoolWithUsers[];
+};
+
+export default async function SchoolList({ initialSchools }: Props) {
+  const schools = initialSchools;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left">
+        <thead className="bg-gray-100">
+          <tr>
+            <th className="p-4">School Name</th>
+            <th className="p-4">Contact</th>
+            <th className="p-4">Login Email</th>
+            <th className="p-4">Student Code</th>
+          </tr>
+        </thead>
+        <tbody>
+          {schools.map((school) => (
+            <tr key={school.id} className="border-t">
+              <td className="p-4 font-medium">{school.name}</td>
+              <td className="p-4">
+                {school.contact}
+                {school.address && (
+                  <>
+                    <br />
+                    <span className="text-sm text-gray-600">{school.address}</span>
+                  </>
+                )}
+              </td>
+              <td className="p-4">
+                {school.users.length > 0
+                  ? (school.users[0].name || school.users[0].email)
+                  : "No login created"}
+              </td>
+              <td className="p-4">
+                <code className="bg-gray-100 px-3 py-1 rounded font-mono text-lg">
+                  {school.code}
+                </code>
+                <p className="text-sm text-gray-600 mt-1">Share this code with students</p>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {schools.length === 0 && (
+        <p className="text-center py-12 text-gray-500">No schools onboarded yet.</p>
+      )}
+    </div>
+  );
+}
+
+
+src/components/ScrapItemForm.tsx
+========================================
+FILE: src/components/ScrapItemForm.tsx
+========================================
+// src/components/ScrapItemForm.tsx
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { toast } from "react-toastify";
+
+export default function ScrapItemForm() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(formData: FormData) {
+    setLoading(true);
+
+    const res = await fetch("/api/scrap-items/create", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      toast.success("Scrap item created!");
+      router.push("/admin/scrap-items");
+      router.refresh();
+    } else {
+      toast.error(data.error || "Failed to create item");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form action={handleSubmit} className="grid md:grid-cols-3 gap-4">
+      <input
+        name="name"
+        placeholder="Item name (e.g., Newspaper)"
+        required
+        className="px-4 py-2 border rounded-lg"
+      />
+
+      <select name="unit" required className="px-4 py-2 border rounded-lg">
+        <option value="KG">KG</option>
+        <option value="PIECE">PIECE</option>
+      </select>
+
+      <input
+        name="basePrice"
+        type="number"
+        step="0.01"
+        placeholder="Base price"
+        required
+        className="px-4 py-2 border rounded-lg"
+      />
+
+      <button
+        type="submit"
+        disabled={loading}
+        className="bg-green-600 text-white px-6 py-2 rounded-lg hover:bg-green-700 disabled:bg-gray-400"
+      >
+        {loading ? "Creating..." : "Add Item"}
+      </button>
+    </form>
+  );
+}
+
+
+src/components/ScrapItemList.tsx
+========================================
+FILE: src/components/ScrapItemList.tsx
+========================================
+// src/components/ScrapItemList.tsx
+"use server";
+
+import { prisma } from "@/lib/prisma";
+import { revalidatePath } from "next/cache";
+
+type Props = {
+  initialItems: Awaited<ReturnType<typeof prisma.scrapItem.findMany>>;
+};
+
+async function toggleActive(id: string, active: boolean) {
+  "use server";
+  await prisma.scrapItem.update({
+    where: { id },
+    data: { active: !active },
+  });
+  revalidatePath("/admin/scrap-items");
+}
+
+export default async function ScrapItemList({ initialItems }: Props) {
+  // In case of concurrent edits, refetch (but initialItems is fine for SSR)
+  const items = initialItems;
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left">
+        <thead className="bg-gray-100">
+          <tr>
+            <th className="p-4">Name</th>
+            <th className="p-4">Unit</th>
+            <th className="p-4">Base Price</th>
+            <th className="p-4">Status</th>
+            <th className="p-4">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((item) => (
+            <tr key={item.id} className="border-t">
+              <td className="p-4">{item.name}</td>
+              <td className="p-4">{item.unit}</td>
+              <td className="p-4">â‚¹{item.basePrice.toString()}</td>
+              <td className="p-4">
+                <span className={`px-3 py-1 rounded-full text-sm ${item.active ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
+                  {item.active ? "Active" : "Inactive"}
+                </span>
+              </td>
+              <td className="p-4">
+                <form action={toggleActive.bind(null, item.id, item.active)}>
+                  <button type="submit" className="text-blue-600 hover:underline">
+                    {item.active ? "Deactivate" : "Activate"}
+                  </button>
+                </form>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {items.length === 0 && (
+        <p className="text-center py-8 text-gray-500">No scrap items yet. Add one above!</p>
+      )}
+    </div>
+  );
+}
+
+
+src/components/SellScrapForm.tsx
+========================================
+FILE: src/components/SellScrapForm.tsx
+========================================
+// src/components/SellScrapForm.tsx
+"use client";
+
+import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
+import { toast } from "react-toastify";
+
+type ScrapItem = {
+  id: string;
+  name: string;
+  unit: "KG" | "PIECE";
+  basePrice: number;
+};
+
+type Event = {
+  id: string;
+  name: string;
+  school: { name: string };
+};
+
+type Props = {
+  items: ScrapItem[];
+  ongoingEvents: Event[];
+};
+
+export default function SellScrapForm({ items, ongoingEvents }: Props) {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const preselectedEventId = searchParams.get("eventId");
+  const [loading, setLoading] = useState(false);
+  const [selectedItems, setSelectedItems] = useState<{ itemId: string; quantity: number }[]>([]);
+
+  const handleQuantityChange = (itemId: string, qty: string) => {
+    const quantity = parseFloat(qty) || 0;
+    if (quantity === 0) {
+      setSelectedItems(selectedItems.filter((i) => i.itemId !== itemId));
+    } else {
+      setSelectedItems((prev) => {
+        const existing = prev.find((i) => i.itemId === itemId);
+        if (existing) {
+          return prev.map((i) => (i.itemId === itemId ? { ...i, quantity } : i));
+        }
+        return [...prev, { itemId, quantity }];
+      });
+    }
+  };
+
+  async function handleSubmit(formData: FormData) {
+    if (selectedItems.length === 0) {
+      toast.error("Please select at least one item");
+      return;
+    }
+
+    setLoading(true);
+
+    selectedItems.forEach((si, index) => {
+      formData.append(`items[${index}][itemId]`, si.itemId);
+      formData.append(`items[${index}][quantity]`, si.quantity.toString());
+    });
+
+    const res = await fetch("/api/orders/sell", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      toast.success("Order submitted successfully!");
+      router.push(`/sell/success?trackingId=${data.publicId}`);
+    } else {
+      toast.error(data.error || "Submission failed");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form action={handleSubmit} className="space-y-8">
+      {/* Optional Event Selection */}
+      {ongoingEvents.length > 0 && (
+        <div className="bg-blue-50 rounded-lg p-6">
+          <h2 className="text-xl font-semibold mb-4">Join EcoChamp Event (Optional)</h2>
+          <select
+            name="eventId"
+            defaultValue={preselectedEventId || ""}
+            className="w-full px-4 py-3 border rounded-lg"
+          >
+            <option value="">Regular Sell (No Event)</option>
+            {ongoingEvents.map((event) => (
+              <option key={event.id} value={event.id}>
+                {event.name} ({event.school.name})
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {/* Items Selection */}
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <h2 className="text-2xl font-semibold mb-6">Select Scrap Items</h2>
+        <div className="space-y-4">
+          {items.map((item) => (
+            <div key={item.id} className="border rounded-lg p-4">
+              <div className="flex justify-between items-center mb-2">
+                <div>
+                  <h3 className="font-medium text-lg">{item.name}</h3>
+                  <p className="text-sm text-gray-600">
+                    â‚¹{item.basePrice} per {item.unit === "KG" ? "kg" : "piece"}
+                  </p>
+                </div>
+              </div>
+              <input
+                type="number"
+                min="0"
+                step={item.unit === "KG" ? "0.5" : "1"}
+                placeholder={`Estimated ${item.unit === "KG" ? "kg" : "pieces"}`}
+                className="w-full px-4 py-3 border rounded-lg text-lg"
+                onChange={(e) => handleQuantityChange(item.id, e.target.value)}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Pickup Details */}
+      <div className="bg-white rounded-lg shadow-lg p-6">
+        <h2 className="text-2xl font-semibold mb-6">Pickup Details</h2>
+        <div className="space-y-4">
+          <input name="contactName" type="text" placeholder="Full Name" required className="w-full px-4 py-3 border rounded-lg" />
+          <input name="contactPhone" type="tel" placeholder="Phone Number" required className="w-full px-4 py-3 border rounded-lg" />
+          <textarea name="pickupAddress" placeholder="Full Pickup Address (with landmark)" rows={4} required className="w-full px-4 py-3 border rounded-lg" />
+          <input
+            name="pickupDate"
+            type="date"
+            min={new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]}
+            required
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+        </div>
+      </div>
+
+      <button
+        type="submit"
+        disabled={loading || selectedItems.length === 0}
+        className="w-full bg-green-600 text-white py-5 rounded-lg text-xl font-semibold hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
+      >
+        {loading ? "Submitting..." : "Schedule Free Pickup"}
+      </button>
+    </form>
+  );
+}
+
+
+src/components/StudentEventList.tsx
+========================================
+FILE: src/components/StudentEventList.tsx
+========================================
+// src/components/StudentEventList.tsx
+"use client";
+
+import { PDFDownloadLink } from "@react-pdf/renderer";
+import CertificatePDF from "@/components/CertificatePDF";
+
+type Event = {
+  id: string;
+  name: string;
+  type: "SELL" | "DONATION";
+  date: Date | null;
+  ngo: { name: string } | null;
+  school: { name: string };
+};
+
+type Props = {
+  events: Event[];
+};
+
+export default function StudentEventList({ events }: Props) {
+  const studentName = "John Doe"; // Replace with real name from session later
+
+  if (events.length === 0) {
+    return (
+      <p className="text-center text-gray-500 py-12">
+        No completed events with participation yet. Join an ongoing event!
+      </p>
+    );
+  }
+
+  return (
+    <div className="grid md:grid-cols-2 gap-8">
+      {events.map((event) => (
+        <div key={event.id} className="bg-white rounded-lg shadow-lg p-8 text-center">
+          <h3 className="text-2xl font-bold mb-4">{event.name}</h3>
+          <p className="text-gray-600 mb-2">
+            {event.school.name} â€¢ {event.date ? new Date(event.date).toLocaleDateString() : "Date TBD"}
+          </p>
+          {event.ngo && <p className="text-green-700 font-medium mb-6">Donated to {event.ngo.name}</p>}
+
+          <PDFDownloadLink
+            document={<CertificatePDF event={event} studentName={studentName} />}
+            fileName={`EcoChamp-${event.name.replace(/\s+/g, "-")}.pdf`}
+          >
+            {({ loading }) => (
+              <button className="bg-green-600 text-white px-8 py-4 rounded-lg text-lg font-semibold hover:bg-green-700">
+                {loading ? "Generating..." : "Download Certificate"}
+              </button>
+            )}
+          </PDFDownloadLink>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+
+src/components/StudentModal.tsx
+========================================
+FILE: src/components/StudentModal.tsx
+========================================
+// src/components/StudentModal.tsx
+"use client";
+
+import { useState } from "react";
+
+type Participation = {
+  student: {
+    id: string;
+    name: string | null;
+    email: string;
+  };
+};
+
+type Event = {
+  id: string;
+  name: string;
+  date: Date | null;
+  type: "SELL" | "DONATION";
+  participations: Participation[];
+};
+
+type Props = {
+  event: Event;
+  children: React.ReactNode;
+};
+
+export default function StudentModal({ event, children }: Props) {
+  const [isOpen, setIsOpen] = useState(false);
+
+  return (
+    <>
+      <div onClick={() => setIsOpen(true)}>{children}</div>
+
+      {isOpen && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" onClick={() => setIsOpen(false)}>
+          <div className="bg-white rounded-lg shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-y-auto p-8" onClick={(e) => e.stopPropagation()}>
+            <h2 className="text-3xl font-bold mb-6">{event.name}</h2>
+            <p className="text-gray-600 mb-4">
+              {event.date ? new Date(event.date).toLocaleDateString() : "Date TBD"} â€¢ {event.type}
+            </p>
+            <p className="text-xl font-semibold mb-6">
+              Total Participants: {event.participations.length}
+            </p>
+
+            {event.participations.length === 0 ? (
+              <p className="text-gray-500 text-center py-8">No students joined yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left">
+                  <thead className="bg-gray-100">
+                    <tr>
+                      <th className="p-4">Name</th>
+                      <th className="p-4">Email</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {event.participations.map((p) => (
+                      <tr key={p.student.id} className="border-t">
+                        <td className="p-4">{p.student.name || "No name"}</td>
+                        <td className="p-4">{p.student.email}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            <button
+              onClick={() => setIsOpen(false)}
+              className="mt-8 w-full bg-gray-600 text-white py-3 rounded-lg hover:bg-gray-700"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+
+src/components/StudentRegisterForm.tsx
+========================================
+FILE: src/components/StudentRegisterForm.tsx
+========================================
+// src/components/StudentRegisterForm.tsx
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+
+export default function StudentRegisterForm() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(false);
+  const [code, setCode] = useState("");
+  const [schoolName, setSchoolName] = useState<string | null>(null);
+  const [error, setError] = useState("");
+
+  async function checkCode() {
+    if (!code.trim()) return;
+
+    const res = await fetch("/api/ecochamp/validate-code", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code: code.toUpperCase().trim() }),
+    });
+
+    const data = await res.json();
+
+    if (data.valid) {
+      setSchoolName(data.schoolName);
+      setError("");
+    } else {
+      setSchoolName(null);
+      setError("Invalid school code. Please check with your school.");
+    }
+  }
+
+  async function handleSubmit(formData: FormData) {
+    if (!schoolName) {
+      setError("Please validate your school code first");
+      return;
+    }
+
+    setLoading(true);
+
+    const res = await fetch("/api/ecochamp/student/register", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      router.push("/ecochamp/login?registered=student");
+    } else {
+      alert(data.error || "Registration failed");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="bg-white rounded-lg shadow-lg p-8 space-y-6">
+      {/* School Code Input */}
+      <div>
+        <label className="block text-lg font-medium mb-2">School Code</label>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="e.g., ECO-ABCD1234"
+            className="flex-1 px-4 py-3 border rounded-lg uppercase"
+            required
+          />
+          <button
+            type="button"
+            onClick={checkCode}
+            className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700"
+          >
+            Validate
+          </button>
+        </div>
+        {error && <p className="text-red-600 mt-2">{error}</p>}
+        {schoolName && <p className="text-green-600 mt-2">Valid! School: <strong>{schoolName}</strong></p>}
+      </div>
+
+      {/* Registration Form (shown only after valid code) */}
+      {schoolName && (
+        <form action={handleSubmit} className="space-y-6">
+          <input type="hidden" name="code" value={code.toUpperCase().trim()} />
+
+          <input
+            name="name"
+            placeholder="Your Full Name"
+            required
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+
+          <input
+            name="email"
+            type="email"
+            placeholder="Your Email"
+            required
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+
+          <input
+            name="password"
+            type="password"
+            placeholder="Password"
+            required
+            className="w-full px-4 py-3 border rounded-lg"
+          />
+
+          <button
+            type="submit"
+            disabled={loading}
+            className="w-full bg-green-600 text-white py-4 rounded-lg text-xl font-semibold hover:bg-green-700 disabled:bg-gray-400"
+          >
+            {loading ? "Registering..." : "Complete Registration"}
+          </button>
+        </form>
+      )}
+    </div>
+  );
+}
+
+
+src/components/TrackOrderForm.tsx
+========================================
+FILE: src/components/TrackOrderForm.tsx
+========================================
+// src/components/TrackOrderForm.tsx
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+
+export default function TrackOrderForm() {
+  const router = useRouter();
+  const [trackingId, setTrackingId] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!trackingId.trim()) return;
+
+    setLoading(true);
+    const upperId = trackingId.toUpperCase().trim();
+    router.push(`/track/${upperId}`);
+  }
+
+  return (
+    <div className="bg-white rounded-lg shadow-lg p-6">
+      <form onSubmit={handleSubmit} className="flex flex-col md:flex-row gap-4">
+        <input
+          type="text"
+          value={trackingId}
+          onChange={(e) => setTrackingId(e.target.value)}
+          placeholder="Enter tracking ID (e.g., SSABC123)"
+          className="flex-1 px-4 py-3 border rounded-lg text-lg uppercase"
+          required
+        />
+        <button
+          type="submit"
+          disabled={loading}
+          className="bg-green-600 text-white px-8 py-3 rounded-lg text-lg font-semibold hover:bg-green-700 disabled:bg-gray-400"
+        >
+          {loading ? "Searching..." : "Track"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+
+src/components/VehicleLeadList.tsx
+========================================
+FILE: src/components/VehicleLeadList.tsx
+========================================
+// src/components/VehicleLeadList.tsx
+"use server";
+
+import { prisma } from "@/lib/prisma";
+import { revalidatePath } from "next/cache";
+
+type Lead = {
+  id: string;
+  publicId: string;
+  make: string;
+  model: string;
+  year: number;
+  condition: string;
+  phone: string;
+  location: string;
+  notes: string | null;
+  status: string;
+  repId: string | null;
+  rep?: {
+    name: string | null;
+    email: string;
+  } | null;
+};
+
+type Rep = { id: string; name: string | null; email: string };
+
+type Props = {
+  initialLeads: Lead[];
+  reps: Rep[];
+};
+
+async function updateStatus(formData: FormData) {
+  "use server";
+  const id = formData.get("id") as string;
+  const status = formData.get("status") as string;
+
+  await prisma.vehicleScrap.update({
+    where: { id },
+    data: { status: status as any },
+  });
+
+  revalidatePath("/admin/vehicle");
+}
+
+async function assignRep(formData: FormData) {
+  "use server";
+  const id = formData.get("id") as string;
+  const repId = formData.get("repId") as string | null;
+
+  await prisma.vehicleScrap.update({
+    where: { id },
+    data: { repId: repId || null },
+  });
+
+  revalidatePath("/admin/vehicle");
+}
+
+export default async function VehicleLeadList({ initialLeads, reps }: Props) {
+  const leads = initialLeads;
+
+  const statusOptions = [
+    "SUBMITTED",
+    "UNDER_REVIEW",
+    "APPROVED",
+    "ASSIGNED",
+    "COMPLETED",
+    "REJECTED",
+  ];
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case "SUBMITTED": return "bg-blue-100 text-blue-800";
+      case "UNDER_REVIEW": return "bg-yellow-100 text-yellow-800";
+      case "APPROVED": return "bg-green-100 text-green-800";
+      case "ASSIGNED": return "bg-purple-100 text-purple-800";
+      case "COMPLETED": return "bg-teal-100 text-teal-800";
+      case "REJECTED": return "bg-red-100 text-red-800";
+      default: return "bg-gray-100 text-gray-800";
+    }
+  };
+
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-left">
+        <thead className="bg-gray-100">
+          <tr>
+            <th className="p-4">Lead ID</th>
+            <th className="p-4">Vehicle</th>
+            <th className="p-4">Contact</th>
+            <th className="p-4">Location</th>
+            <th className="p-4">Status</th>
+            <th className="p-4">Assigned Rep</th>
+            <th className="p-4">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {leads.map((lead) => (
+            <tr key={lead.id} className="border-t hover:bg-gray-50">
+              <td className="p-4 font-medium">{lead.publicId}</td>
+              <td className="p-4">
+                {lead.year} {lead.make} {lead.model}<br />
+                <span className="text-sm text-gray-600">{lead.condition}</span>
+              </td>
+              <td className="p-4">
+                {lead.phone}<br />
+                {lead.notes && <span className="text-sm text-gray-600">{lead.notes}</span>}
+              </td>
+              <td className="p-4">{lead.location}</td>
+              <td className="p-4">
+                <span className={`px-3 py-1 rounded-full text-sm ${getStatusColor(lead.status)}`}>
+                  {lead.status.replace("_", " ")}
+                </span>
+              </td>
+              <td className="p-4">
+                {lead.rep ? (lead.rep.name || lead.rep.email || "Rep") : "-"}
+              </td>
+              <td className="p-4 space-y-4">
+                {/* Status Update Form */}
+                <form action={updateStatus} className="flex items-center gap-2">
+                  <input type="hidden" name="id" value={lead.id} />
+                  <select name="status" defaultValue={lead.status} className="px-3 py-1 border rounded text-sm">
+                    {statusOptions.map((s) => (
+                      <option key={s} value={s}>{s.replace("_", " ")}</option>
+                    ))}
+                  </select>
+                  <button type="submit" className="text-blue-600 hover:underline text-sm">
+                    Update
+                  </button>
+                </form>
+
+                {/* Rep Assignment Form */}
+                <form action={assignRep} className="flex items-center gap-2">
+                  <input type="hidden" name="id" value={lead.id} />
+                  <select name="repId" defaultValue={lead.repId || ""} className="px-3 py-1 border rounded text-sm">
+                    <option value="">Unassigned</option>
+                    {reps.map((rep) => (
+                      <option key={rep.id} value={rep.id}>
+                        {rep.name || rep.email}
+                      </option>
+                    ))}
+                  </select>
+                  <button type="submit" className="text-blue-600 hover:underline text-sm">
+                    Assign
+                  </button>
+                </form>
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+
+      {leads.length === 0 && (
+        <p className="text-center py-12 text-gray-500">No vehicle leads yet.</p>
+      )}
+    </div>
+  );
+}
+
+
+src/components/VehicleScrapForm.tsx
+========================================
+FILE: src/components/VehicleScrapForm.tsx
+========================================
+// src/components/VehicleScrapForm.tsx
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+
+export default function VehicleScrapForm() {
+  const router = useRouter();
+  const [loading, setLoading] = useState(false);
+
+  async function handleSubmit(formData: FormData) {
+    setLoading(true);
+
+    const res = await fetch("/api/vehicle/submit", {
+      method: "POST",
+      body: formData,
+    });
+
+    const data = await res.json();
+
+    if (data.success) {
+      router.push(`/vehicle/success?leadId=${data.publicId}`);
+    } else {
+      alert("Submission failed. Please try again.");
+      setLoading(false);
+    }
+  }
+
+  return (
+    <form action={handleSubmit} className="bg-white rounded-lg shadow-lg p-6 space-y-6">
+      <div className="grid md:grid-cols-2 gap-4">
+        <input name="make" placeholder="Make (e.g., Maruti)" required className="px-4 py-3 border rounded-lg" />
+        <input name="model" placeholder="Model (e.g., Swift)" required className="px-4 py-3 border rounded-lg" />
+        <input name="year" type="number" min="1900" max={new Date().getFullYear()} placeholder="Year" required className="px-4 py-3 border rounded-lg" />
+        <select name="condition" required className="px-4 py-3 border rounded-lg">
+          <option value="">Condition</option>
+          <option>Running</option>
+          <option>Not Running</option>
+          <option>Accident</option>
+          <option>Scrap Only</option>
+        </select>
+      </div>
+
+      <input name="phone" type="tel" placeholder="Phone Number" required className="w-full px-4 py-3 border rounded-lg" />
+      <input name="location" placeholder="City / Area" required className="w-full px-4 py-3 border rounded-lg" />
+      <textarea name="notes" placeholder="Additional notes (optional)" rows={4} className="w-full px-4 py-3 border rounded-lg" />
+
+      <button
+        type="submit"
+        disabled={loading}
+        className="w-full bg-green-600 text-white py-5 rounded-lg text-xl font-semibold hover:bg-green-700 disabled:bg-gray-400"
+      >
+        {loading ? "Submitting..." : "Get Quote & Free Pickup"}
+      </button>
+    </form>
+  );
+}
+
+
+src/generated/prisma/browser.ts
+========================================
+FILE: src/generated/prisma/browser.ts
+========================================
+
+/* !!! This is code generated by Prisma. Do not edit directly. !!! */
+/* eslint-disable */
+// biome-ignore-all lint: generated file
+// @ts-nocheck 
+/*
+ * This file should be your main import to use Prisma-related types and utilities in a browser. 
+ * Use it to get access to models, enums, and input types.
+ * 
+ * This file does not contain a `PrismaClient` class, nor several other helpers that are intended as server-side only.
+ * See `client.ts` for the standard, server-side entry point.
+ *
+ * ğŸŸ¢ You can import this file directly.
+ */
+
+import * as Prisma from './internal/prismaNamespaceBrowser'
+export { Prisma }
+export * as $Enums from './enums'
+export * from './enums';
+
+
+
+
+src/generated/prisma/client.ts
+========================================
+FILE: src/generated/prisma/client.ts
+========================================
+
+/* !!! This is code generated by Prisma. Do not edit directly. !!! */
+/* eslint-disable */
+// biome-ignore-all lint: generated file
+// @ts-nocheck 
+/*
+ * This file should be your main import to use Prisma. Through it you get access to all the models, enums, and input types.
+ * If you're looking for something you can import in the client-side of your application, please refer to the `browser.ts` file instead.
+ *
+ * ğŸŸ¢ You can import this file directly.
+ */
+
+import * as process from 'node:process'
+import * as path from 'node:path'
+import { fileURLToPath } from 'node:url'
+globalThis['__dirname'] = path.dirname(fileURLToPath(import.meta.url))
+
+import * as runtime from "@prisma/client/runtime/client"
+import * as $Enums from "./enums"
+import * as $Class from "./internal/class"
+import * as Prisma from "./internal/prismaNamespace"
+
+export * as $Enums from './enums'
+export * from "./enums"
+/**
+ * ## Prisma Client
+ * 
+ * Type-safe database client for TypeScript
+ * @example
+ * ```
+ * const prisma = new PrismaClient()
+ * // Fetch zero or more Users
+ * const users = await prisma.user.findMany()
+ * ```
+ * 
+ * Read more in our [docs](https://pris.ly/d/client).
+ */
+export const PrismaClient = $Class.getPrismaClientClass()
+export type PrismaClient<LogOpts extends Prisma.LogLevel = never, OmitOpts extends Prisma.PrismaClientOptions["omit"] = Prisma.PrismaClientOptions["omit"], ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs> = $Class.PrismaClient<LogOpts, OmitOpts, ExtArgs>
+export { Prisma }
+
+
+
+
+
+src/generated/prisma/commonInputTypes.ts
+========================================
+FILE: src/generated/prisma/commonInputTypes.ts
+========================================
+
+/* !!! This is code generated by Prisma. Do not edit directly. !!! */
+/* eslint-disable */
+// biome-ignore-all lint: generated file
+// @ts-nocheck 
+/*
+ * This file exports various common sort, input & filter types that are not directly linked to a particular model.
+ *
+ * ğŸŸ¢ You can import this file directly.
+ */
+
+import type * as runtime from "@prisma/client/runtime/client"
+import * as $Enums from "./enums"
+import type * as Prisma from "./internal/prismaNamespace"
+
+
+
+
+
+
+
+src/generated/prisma/enums.ts
+========================================
+FILE: src/generated/prisma/enums.ts
+========================================
+
+/* !!! This is code generated by Prisma. Do not edit directly. !!! */
+/* eslint-disable */
+// biome-ignore-all lint: generated file
+// @ts-nocheck 
+/*
+* This file exports all enum related types from the schema.
+*
+* ğŸŸ¢ You can import this file directly.
+*/
+
+
+
+// This file is empty because there are no enums in the schema.
+export {}
+
+
+
+src/generated/prisma/internal/class.ts
+========================================
+FILE: src/generated/prisma/internal/class.ts
+========================================
+
+/* !!! This is code generated by Prisma. Do not edit directly. !!! */
+/* eslint-disable */
+// biome-ignore-all lint: generated file
+// @ts-nocheck 
+/*
+ * WARNING: This is an internal file that is subject to change!
+ *
+ * ğŸ›‘ Under no circumstances should you import this file directly! ğŸ›‘
+ *
+ * Please import the `PrismaClient` class from the `client.ts` file instead.
+ */
+
+import * as runtime from "@prisma/client/runtime/client"
+import type * as Prisma from "./prismaNamespace"
+
+
+const config: runtime.GetPrismaClientConfig = {
+  "previewFeatures": [],
+  "clientVersion": "7.2.0",
+  "engineVersion": "0c8ef2ce45c83248ab3df073180d5eda9e8be7a3",
+  "activeProvider": "postgresql",
+  "inlineSchema": "// This is your Prisma schema file,\n// learn more about it in the docs: https://pris.ly/d/prisma-schema\n\n// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?\n// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init\n\ngenerator client {\n  provider = \"prisma-client\"\n  output   = \"../src/generated/prisma\"\n}\n\ndatasource db {\n  provider = \"postgresql\"\n}\n",
+  "runtimeDataModel": {
+    "models": {},
+    "enums": {},
+    "types": {}
+  }
+}
+
+config.runtimeDataModel = JSON.parse("{\"models\":{},\"enums\":{},\"types\":{}}")
+
+async function decodeBase64AsWasm(wasmBase64: string): Promise<WebAssembly.Module> {
+  const { Buffer } = await import('node:buffer')
+  const wasmArray = Buffer.from(wasmBase64, 'base64')
+  return new WebAssembly.Module(wasmArray)
+}
+
+config.compilerWasm = {
+  getRuntime: async () => await import("@prisma/client/runtime/query_compiler_bg.postgresql.mjs"),
+
+  getQueryCompilerWasmModule: async () => {
+    const { wasm } = await import("@prisma/client/runtime/query_compiler_bg.postgresql.wasm-base64.mjs")
+    return await decodeBase64AsWasm(wasm)
+  }
+}
+
+
+
+export type LogOptions<ClientOptions extends Prisma.PrismaClientOptions> =
+  'log' extends keyof ClientOptions ? ClientOptions['log'] extends Array<Prisma.LogLevel | Prisma.LogDefinition> ? Prisma.GetEvents<ClientOptions['log']> : never : never
+
+export interface PrismaClientConstructor {
+    /**
+   * ## Prisma Client
+   * 
+   * Type-safe database client for TypeScript
+   * @example
+   * ```
+   * const prisma = new PrismaClient()
+   * // Fetch zero or more Users
+   * const users = await prisma.user.findMany()
+   * ```
+   * 
+   * Read more in our [docs](https://pris.ly/d/client).
+   */
+
+  new <
+    Options extends Prisma.PrismaClientOptions = Prisma.PrismaClientOptions,
+    LogOpts extends LogOptions<Options> = LogOptions<Options>,
+    OmitOpts extends Prisma.PrismaClientOptions['omit'] = Options extends { omit: infer U } ? U : Prisma.PrismaClientOptions['omit'],
+    ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs
+  >(options: Prisma.Subset<Options, Prisma.PrismaClientOptions> ): PrismaClient<LogOpts, OmitOpts, ExtArgs>
+}
+
+/**
+ * ## Prisma Client
+ * 
+ * Type-safe database client for TypeScript
+ * @example
+ * ```
+ * const prisma = new PrismaClient()
+ * // Fetch zero or more Users
+ * const users = await prisma.user.findMany()
+ * ```
+ * 
+ * Read more in our [docs](https://pris.ly/d/client).
+ */
+
+export interface PrismaClient<
+  in LogOpts extends Prisma.LogLevel = never,
+  in out OmitOpts extends Prisma.PrismaClientOptions['omit'] = undefined,
+  in out ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs
+> {
+  [K: symbol]: { types: Prisma.TypeMap<ExtArgs>['other'] }
+
+  $on<V extends LogOpts>(eventType: V, callback: (event: V extends 'query' ? Prisma.QueryEvent : Prisma.LogEvent) => void): PrismaClient;
+
+  /**
+   * Connect with the database
+   */
+  $connect(): runtime.Types.Utils.JsPromise<void>;
+
+  /**
+   * Disconnect from the database
+   */
+  $disconnect(): runtime.Types.Utils.JsPromise<void>;
+
+/**
+   * Executes a prepared raw query and returns the number of affected rows.
+   * @example
+   * ```
+   * const result = await prisma.$executeRaw`UPDATE User SET cool = ${true} WHERE email = ${'user@email.com'};`
+   * ```
+   *
+   * Read more in our [docs](https://pris.ly/d/raw-queries).
+   */
+  $executeRaw<T = unknown>(query: TemplateStringsArray | Prisma.Sql, ...values: any[]): Prisma.PrismaPromise<number>;
+
+  /**
+   * Executes a raw query and returns the number of affected rows.
+   * Susceptible to SQL injections, see documentation.
+   * @example
+   * ```
+   * const result = await prisma.$executeRawUnsafe('UPDATE User SET cool = $1 WHERE email = $2 ;', true, 'user@email.com')
+   * ```
+   *
+   * Read more in our [docs](https://pris.ly/d/raw-queries).
+   */
+  $executeRawUnsafe<T = unknown>(query: string, ...values: any[]): Prisma.PrismaPromise<number>;
+
+  /**
+   * Performs a prepared raw query and returns the `SELECT` data.
+   * @example
+   * ```
+   * const result = await prisma.$queryRaw`SELECT * FROM User WHERE id = ${1} OR email = ${'user@email.com'};`
+   * ```
+   *
+   * Read more in our [docs](https://pris.ly/d/raw-queries).
+   */
+  $queryRaw<T = unknown>(query: TemplateStringsArray | Prisma.Sql, ...values: any[]): Prisma.PrismaPromise<T>;
+
+  /**
+   * Performs a raw query and returns the `SELECT` data.
+   * Susceptible to SQL injections, see documentation.
+   * @example
+   * ```
+   * const result = await prisma.$queryRawUnsafe('SELECT * FROM User WHERE id = $1 OR email = $2;', 1, 'user@email.com')
+   * ```
+   *
+   * Read more in our [docs](https://pris.ly/d/raw-queries).
+   */
+  $queryRawUnsafe<T = unknown>(query: string, ...values: any[]): Prisma.PrismaPromise<T>;
+
+
+  /**
+   * Allows the running of a sequence of read/write operations that are guaranteed to either succeed or fail as a whole.
+   * @example
+   * ```
+   * const [george, bob, alice] = await prisma.$transaction([
+   *   prisma.user.create({ data: { name: 'George' } }),
+   *   prisma.user.create({ data: { name: 'Bob' } }),
+   *   prisma.user.create({ data: { name: 'Alice' } }),
+   * ])
+   * ```
+   * 
+   * Read more in our [docs](https://www.prisma.io/docs/concepts/components/prisma-client/transactions).
+   */
+  $transaction<P extends Prisma.PrismaPromise<any>[]>(arg: [...P], options?: { isolationLevel?: Prisma.TransactionIsolationLevel }): runtime.Types.Utils.JsPromise<runtime.Types.Utils.UnwrapTuple<P>>
+
+  $transaction<R>(fn: (prisma: Omit<PrismaClient, runtime.ITXClientDenyList>) => runtime.Types.Utils.JsPromise<R>, options?: { maxWait?: number, timeout?: number, isolationLevel?: Prisma.TransactionIsolationLevel }): runtime.Types.Utils.JsPromise<R>
+
+  $extends: runtime.Types.Extensions.ExtendsHook<"extends", Prisma.TypeMapCb<OmitOpts>, ExtArgs, runtime.Types.Utils.Call<Prisma.TypeMapCb<OmitOpts>, {
+    extArgs: ExtArgs
+  }>>
+
+    
+}
+
+export function getPrismaClientClass(): PrismaClientConstructor {
+  return runtime.getPrismaClient(config) as unknown as PrismaClientConstructor
+}
+
+
+
+src/generated/prisma/internal/prismaNamespace.ts
+========================================
+FILE: src/generated/prisma/internal/prismaNamespace.ts
+========================================
+
+/* !!! This is code generated by Prisma. Do not edit directly. !!! */
+/* eslint-disable */
+// biome-ignore-all lint: generated file
+// @ts-nocheck 
+/*
+ * WARNING: This is an internal file that is subject to change!
+ *
+ * ğŸ›‘ Under no circumstances should you import this file directly! ğŸ›‘
+ *
+ * All exports from this file are wrapped under a `Prisma` namespace object in the client.ts file.
+ * While this enables partial backward compatibility, it is not part of the stable public API.
+ *
+ * If you are looking for your Models, Enums, and Input Types, please import them from the respective
+ * model files in the `model` directory!
+ */
+
+import * as runtime from "@prisma/client/runtime/client"
+import type * as Prisma from "../models"
+import { type PrismaClient } from "./class"
+
+export type * from '../models'
+
+export type DMMF = typeof runtime.DMMF
+
+export type PrismaPromise<T> = runtime.Types.Public.PrismaPromise<T>
+
+/**
+ * Prisma Errors
+ */
+
+export const PrismaClientKnownRequestError = runtime.PrismaClientKnownRequestError
+export type PrismaClientKnownRequestError = runtime.PrismaClientKnownRequestError
+
+export const PrismaClientUnknownRequestError = runtime.PrismaClientUnknownRequestError
+export type PrismaClientUnknownRequestError = runtime.PrismaClientUnknownRequestError
+
+export const PrismaClientRustPanicError = runtime.PrismaClientRustPanicError
+export type PrismaClientRustPanicError = runtime.PrismaClientRustPanicError
+
+export const PrismaClientInitializationError = runtime.PrismaClientInitializationError
+export type PrismaClientInitializationError = runtime.PrismaClientInitializationError
+
+export const PrismaClientValidationError = runtime.PrismaClientValidationError
+export type PrismaClientValidationError = runtime.PrismaClientValidationError
+
+/**
+ * Re-export of sql-template-tag
+ */
+export const sql = runtime.sqltag
+export const empty = runtime.empty
+export const join = runtime.join
+export const raw = runtime.raw
+export const Sql = runtime.Sql
+export type Sql = runtime.Sql
+
+
+
+/**
+ * Decimal.js
+ */
+export const Decimal = runtime.Decimal
+export type Decimal = runtime.Decimal
+
+export type DecimalJsLike = runtime.DecimalJsLike
+
+/**
+* Extensions
+*/
+export type Extension = runtime.Types.Extensions.UserArgs
+export const getExtensionContext = runtime.Extensions.getExtensionContext
+export type Args<T, F extends runtime.Operation> = runtime.Types.Public.Args<T, F>
+export type Payload<T, F extends runtime.Operation = never> = runtime.Types.Public.Payload<T, F>
+export type Result<T, A, F extends runtime.Operation> = runtime.Types.Public.Result<T, A, F>
+export type Exact<A, W> = runtime.Types.Public.Exact<A, W>
+
+export type PrismaVersion = {
+  client: string
+  engine: string
+}
+
+/**
+ * Prisma Client JS version: 7.2.0
+ * Query Engine version: 0c8ef2ce45c83248ab3df073180d5eda9e8be7a3
+ */
+export const prismaVersion: PrismaVersion = {
+  client: "7.2.0",
+  engine: "0c8ef2ce45c83248ab3df073180d5eda9e8be7a3"
+}
+
+/**
+ * Utility Types
+ */
+
+export type Bytes = runtime.Bytes
+export type JsonObject = runtime.JsonObject
+export type JsonArray = runtime.JsonArray
+export type JsonValue = runtime.JsonValue
+export type InputJsonObject = runtime.InputJsonObject
+export type InputJsonArray = runtime.InputJsonArray
+export type InputJsonValue = runtime.InputJsonValue
+
+
+export const NullTypes = {
+  DbNull: runtime.NullTypes.DbNull as (new (secret: never) => typeof runtime.DbNull),
+  JsonNull: runtime.NullTypes.JsonNull as (new (secret: never) => typeof runtime.JsonNull),
+  AnyNull: runtime.NullTypes.AnyNull as (new (secret: never) => typeof runtime.AnyNull),
+}
+/**
+ * Helper for filtering JSON entries that have `null` on the database (empty on the db)
+ *
+ * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
+ */
+export const DbNull = runtime.DbNull
+
+/**
+ * Helper for filtering JSON entries that have JSON `null` values (not empty on the db)
+ *
+ * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
+ */
+export const JsonNull = runtime.JsonNull
+
+/**
+ * Helper for filtering JSON entries that are `Prisma.DbNull` or `Prisma.JsonNull`
+ *
+ * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
+ */
+export const AnyNull = runtime.AnyNull
+
+
+type SelectAndInclude = {
+  select: any
+  include: any
+}
+
+type SelectAndOmit = {
+  select: any
+  omit: any
+}
+
+/**
+ * From T, pick a set of properties whose keys are in the union K
+ */
+type Prisma__Pick<T, K extends keyof T> = {
+    [P in K]: T[P];
+};
+
+export type Enumerable<T> = T | Array<T>;
+
+/**
+ * Subset
+ * @desc From `T` pick properties that exist in `U`. Simple version of Intersection
+ */
+export type Subset<T, U> = {
+  [key in keyof T]: key extends keyof U ? T[key] : never;
+};
+
+/**
+ * SelectSubset
+ * @desc From `T` pick properties that exist in `U`. Simple version of Intersection.
+ * Additionally, it validates, if both select and include are present. If the case, it errors.
+ */
+export type SelectSubset<T, U> = {
+  [key in keyof T]: key extends keyof U ? T[key] : never
+} &
+  (T extends SelectAndInclude
+    ? 'Please either choose `select` or `include`.'
+    : T extends SelectAndOmit
+      ? 'Please either choose `select` or `omit`.'
+      : {})
+
+/**
+ * Subset + Intersection
+ * @desc From `T` pick properties that exist in `U` and intersect `K`
+ */
+export type SubsetIntersection<T, U, K> = {
+  [key in keyof T]: key extends keyof U ? T[key] : never
+} &
+  K
+
+type Without<T, U> = { [P in Exclude<keyof T, keyof U>]?: never };
+
+/**
+ * XOR is needed to have a real mutually exclusive union type
+ * https://stackoverflow.com/questions/42123407/does-typescript-support-mutually-exclusive-types
+ */
+export type XOR<T, U> =
+  T extends object ?
+  U extends object ?
+    (Without<T, U> & U) | (Without<U, T> & T)
+  : U : T
+
+
+/**
+ * Is T a Record?
+ */
+type IsObject<T extends any> = T extends Array<any>
+? False
+: T extends Date
+? False
+: T extends Uint8Array
+? False
+: T extends BigInt
+? False
+: T extends object
+? True
+: False
+
+
+/**
+ * If it's T[], return T
+ */
+export type UnEnumerate<T extends unknown> = T extends Array<infer U> ? U : T
+
+/**
+ * From ts-toolbelt
+ */
+
+type __Either<O extends object, K extends Key> = Omit<O, K> &
+  {
+    // Merge all but K
+    [P in K]: Prisma__Pick<O, P & keyof O> // With K possibilities
+  }[K]
+
+type EitherStrict<O extends object, K extends Key> = Strict<__Either<O, K>>
+
+type EitherLoose<O extends object, K extends Key> = ComputeRaw<__Either<O, K>>
+
+type _Either<
+  O extends object,
+  K extends Key,
+  strict extends Boolean
+> = {
+  1: EitherStrict<O, K>
+  0: EitherLoose<O, K>
+}[strict]
+
+export type Either<
+  O extends object,
+  K extends Key,
+  strict extends Boolean = 1
+> = O extends unknown ? _Either<O, K, strict> : never
+
+export type Union = any
+
+export type PatchUndefined<O extends object, O1 extends object> = {
+  [K in keyof O]: O[K] extends undefined ? At<O1, K> : O[K]
+} & {}
+
+/** Helper Types for "Merge" **/
+export type IntersectOf<U extends Union> = (
+  U extends unknown ? (k: U) => void : never
+) extends (k: infer I) => void
+  ? I
+  : never
+
+export type Overwrite<O extends object, O1 extends object> = {
+    [K in keyof O]: K extends keyof O1 ? O1[K] : O[K];
+} & {};
+
+type _Merge<U extends object> = IntersectOf<Overwrite<U, {
+    [K in keyof U]-?: At<U, K>;
+}>>;
+
+type Key = string | number | symbol;
+type AtStrict<O extends object, K extends Key> = O[K & keyof O];
+type AtLoose<O extends object, K extends Key> = O extends unknown ? AtStrict<O, K> : never;
+export type At<O extends object, K extends Key, strict extends Boolean = 1> = {
+    1: AtStrict<O, K>;
+    0: AtLoose<O, K>;
+}[strict];
+
+export type ComputeRaw<A extends any> = A extends Function ? A : {
+  [K in keyof A]: A[K];
+} & {};
+
+export type OptionalFlat<O> = {
+  [K in keyof O]?: O[K];
+} & {};
+
+type _Record<K extends keyof any, T> = {
+  [P in K]: T;
+};
+
+// cause typescript not to expand types and preserve names
+type NoExpand<T> = T extends unknown ? T : never;
+
+// this type assumes the passed object is entirely optional
+export type AtLeast<O extends object, K extends string> = NoExpand<
+  O extends unknown
+  ? | (K extends keyof O ? { [P in K]: O[P] } & O : O)
+    | {[P in keyof O as P extends K ? P : never]-?: O[P]} & O
+  : never>;
+
+type _Strict<U, _U = U> = U extends unknown ? U & OptionalFlat<_Record<Exclude<Keys<_U>, keyof U>, never>> : never;
+
+export type Strict<U extends object> = ComputeRaw<_Strict<U>>;
+/** End Helper Types for "Merge" **/
+
+export type Merge<U extends object> = ComputeRaw<_Merge<Strict<U>>>;
+
+export type Boolean = True | False
+
+export type True = 1
+
+export type False = 0
+
+export type Not<B extends Boolean> = {
+  0: 1
+  1: 0
+}[B]
+
+export type Extends<A1 extends any, A2 extends any> = [A1] extends [never]
+  ? 0 // anything `never` is false
+  : A1 extends A2
+  ? 1
+  : 0
+
+export type Has<U extends Union, U1 extends Union> = Not<
+  Extends<Exclude<U1, U>, U1>
+>
+
+export type Or<B1 extends Boolean, B2 extends Boolean> = {
+  0: {
+    0: 0
+    1: 1
+  }
+  1: {
+    0: 1
+    1: 1
+  }
+}[B1][B2]
+
+export type Keys<U extends Union> = U extends unknown ? keyof U : never
+
+export type GetScalarType<T, O> = O extends object ? {
+  [P in keyof T]: P extends keyof O
+    ? O[P]
+    : never
+} : never
+
+type FieldPaths<
+  T,
+  U = Omit<T, '_avg' | '_sum' | '_count' | '_min' | '_max'>
+> = IsObject<T> extends True ? U : T
+
+export type GetHavingFields<T> = {
+  [K in keyof T]: Or<
+    Or<Extends<'OR', K>, Extends<'AND', K>>,
+    Extends<'NOT', K>
+  > extends True
+    ? // infer is only needed to not hit TS limit
+      // based on the brilliant idea of Pierre-Antoine Mills
+      // https://github.com/microsoft/TypeScript/issues/30188#issuecomment-478938437
+      T[K] extends infer TK
+      ? GetHavingFields<UnEnumerate<TK> extends object ? Merge<UnEnumerate<TK>> : never>
+      : never
+    : {} extends FieldPaths<T[K]>
+    ? never
+    : K
+}[keyof T]
+
+/**
+ * Convert tuple to union
+ */
+type _TupleToUnion<T> = T extends (infer E)[] ? E : never
+type TupleToUnion<K extends readonly any[]> = _TupleToUnion<K>
+export type MaybeTupleToUnion<T> = T extends any[] ? TupleToUnion<T> : T
+
+/**
+ * Like `Pick`, but additionally can also accept an array of keys
+ */
+export type PickEnumerable<T, K extends Enumerable<keyof T> | keyof T> = Prisma__Pick<T, MaybeTupleToUnion<K>>
+
+/**
+ * Exclude all keys with underscores
+ */
+export type ExcludeUnderscoreKeys<T extends string> = T extends `_${string}` ? never : T
+
+
+export type FieldRef<Model, FieldType> = runtime.FieldRef<Model, FieldType>
+
+type FieldRefInputType<Model, FieldType> = Model extends never ? never : FieldRef<Model, FieldType>
+
+
+export const ModelName = {
+
+} as const
+
+export type ModelName = (typeof ModelName)[keyof typeof ModelName]
+
+
+
+export interface TypeMapCb<GlobalOmitOptions = {}> extends runtime.Types.Utils.Fn<{extArgs: runtime.Types.Extensions.InternalArgs }, runtime.Types.Utils.Record<string, any>> {
+  returns: TypeMap<this['params']['extArgs'], GlobalOmitOptions>
+}
+
+export type TypeMap<ExtArgs extends runtime.Types.Extensions.InternalArgs = runtime.Types.Extensions.DefaultArgs, GlobalOmitOptions = {}> = {
+  globalOmitOptions: {
+    omit: GlobalOmitOptions
+  }
+  meta: {
+    modelProps: never
+    txIsolationLevel: TransactionIsolationLevel
+  }
+  model: {}
+} & {
+  other: {
+    payload: any
+    operations: {
+      $executeRaw: {
+        args: [query: TemplateStringsArray | Sql, ...values: any[]],
+        result: any
+      }
+      $executeRawUnsafe: {
+        args: [query: string, ...values: any[]],
+        result: any
+      }
+      $queryRaw: {
+        args: [query: TemplateStringsArray | Sql, ...values: any[]],
+        result: any
+      }
+      $queryRawUnsafe: {
+        args: [query: string, ...values: any[]],
+        result: any
+      }
+    }
+  }
+}
+
+/**
+ * Enums
+ */
+
+export const TransactionIsolationLevel = runtime.makeStrictEnum({
+  ReadUncommitted: 'ReadUncommitted',
+  ReadCommitted: 'ReadCommitted',
+  RepeatableRead: 'RepeatableRead',
+  Serializable: 'Serializable'
+} as const)
+
+export type TransactionIsolationLevel = (typeof TransactionIsolationLevel)[keyof typeof TransactionIsolationLevel]
+
+
+
+
+/**
+ * Batch Payload for updateMany & deleteMany & createMany
+ */
+export type BatchPayload = {
+  count: number
+}
+
+export const defineExtension = runtime.Extensions.defineExtension as unknown as runtime.Types.Extensions.ExtendsHook<"define", TypeMapCb, runtime.Types.Extensions.DefaultArgs>
+export type DefaultPrismaClient = PrismaClient
+export type ErrorFormat = 'pretty' | 'colorless' | 'minimal'
+export type PrismaClientOptions = ({
+  /**
+   * Instance of a Driver Adapter, e.g., like one provided by `@prisma/adapter-pg`.
+   */
+  adapter: runtime.SqlDriverAdapterFactory
+  accelerateUrl?: never
+} | {
+  /**
+   * Prisma Accelerate URL allowing the client to connect through Accelerate instead of a direct database.
+   */
+  accelerateUrl: string
+  adapter?: never
+}) & {
+  /**
+   * @default "colorless"
+   */
+  errorFormat?: ErrorFormat
+  /**
+   * @example
+   * ```
+   * // Shorthand for `emit: 'stdout'`
+   * log: ['query', 'info', 'warn', 'error']
+   * 
+   * // Emit as events only
+   * log: [
+   *   { emit: 'event', level: 'query' },
+   *   { emit: 'event', level: 'info' },
+   *   { emit: 'event', level: 'warn' }
+   *   { emit: 'event', level: 'error' }
+   * ]
+   * 
+   * / Emit as events and log to stdout
+   * og: [
+   *  { emit: 'stdout', level: 'query' },
+   *  { emit: 'stdout', level: 'info' },
+   *  { emit: 'stdout', level: 'warn' }
+   *  { emit: 'stdout', level: 'error' }
+   * 
+   * ```
+   * Read more in our [docs](https://pris.ly/d/logging).
+   */
+  log?: (LogLevel | LogDefinition)[]
+  /**
+   * The default values for transactionOptions
+   * maxWait ?= 2000
+   * timeout ?= 5000
+   */
+  transactionOptions?: {
+    maxWait?: number
+    timeout?: number
+    isolationLevel?: TransactionIsolationLevel
+  }
+  /**
+   * Global configuration for omitting model fields by default.
+   * 
+   * @example
+   * ```
+   * const prisma = new PrismaClient({
+   *   omit: {
+   *     user: {
+   *       password: true
+   *     }
+   *   }
+   * })
+   * ```
+   */
+  omit?: GlobalOmitConfig
+  /**
+   * SQL commenter plugins that add metadata to SQL queries as comments.
+   * Comments follow the sqlcommenter format: https://google.github.io/sqlcommenter/
+   * 
+   * @example
+   * ```
+   * const prisma = new PrismaClient({
+   *   adapter,
+   *   comments: [
+   *     traceContext(),
+   *     queryInsights(),
+   *   ],
+   * })
+   * ```
+   */
+  comments?: runtime.SqlCommenterPlugin[]
+}
+export type GlobalOmitConfig = {}
+
+/* Types for Logging */
+export type LogLevel = 'info' | 'query' | 'warn' | 'error'
+export type LogDefinition = {
+  level: LogLevel
+  emit: 'stdout' | 'event'
+}
+
+export type CheckIsLogLevel<T> = T extends LogLevel ? T : never;
+
+export type GetLogType<T> = CheckIsLogLevel<
+  T extends LogDefinition ? T['level'] : T
+>;
+
+export type GetEvents<T extends any[]> = T extends Array<LogLevel | LogDefinition>
+  ? GetLogType<T[number]>
+  : never;
+
+export type QueryEvent = {
+  timestamp: Date
+  query: string
+  params: string
+  duration: number
+  target: string
+}
+
+export type LogEvent = {
+  timestamp: Date
+  message: string
+  target: string
+}
+/* End Types for Logging */
+
+
+export type PrismaAction =
+  | 'findUnique'
+  | 'findUniqueOrThrow'
+  | 'findMany'
+  | 'findFirst'
+  | 'findFirstOrThrow'
+  | 'create'
+  | 'createMany'
+  | 'createManyAndReturn'
+  | 'update'
+  | 'updateMany'
+  | 'updateManyAndReturn'
+  | 'upsert'
+  | 'delete'
+  | 'deleteMany'
+  | 'executeRaw'
+  | 'queryRaw'
+  | 'aggregate'
+  | 'count'
+  | 'runCommandRaw'
+  | 'findRaw'
+  | 'groupBy'
+
+/**
+ * `PrismaClient` proxy available in interactive transactions.
+ */
+export type TransactionClient = Omit<DefaultPrismaClient, runtime.ITXClientDenyList>
+
+
+
+
+src/generated/prisma/internal/prismaNamespaceBrowser.ts
+========================================
+FILE: src/generated/prisma/internal/prismaNamespaceBrowser.ts
+========================================
+
+/* !!! This is code generated by Prisma. Do not edit directly. !!! */
+/* eslint-disable */
+// biome-ignore-all lint: generated file
+// @ts-nocheck 
+/*
+ * WARNING: This is an internal file that is subject to change!
+ *
+ * ğŸ›‘ Under no circumstances should you import this file directly! ğŸ›‘
+ *
+ * All exports from this file are wrapped under a `Prisma` namespace object in the browser.ts file.
+ * While this enables partial backward compatibility, it is not part of the stable public API.
+ *
+ * If you are looking for your Models, Enums, and Input Types, please import them from the respective
+ * model files in the `model` directory!
+ */
+
+import * as runtime from "@prisma/client/runtime/index-browser"
+
+export type * from '../models'
+export type * from './prismaNamespace'
+
+export const Decimal = runtime.Decimal
+
+
+export const NullTypes = {
+  DbNull: runtime.NullTypes.DbNull as (new (secret: never) => typeof runtime.DbNull),
+  JsonNull: runtime.NullTypes.JsonNull as (new (secret: never) => typeof runtime.JsonNull),
+  AnyNull: runtime.NullTypes.AnyNull as (new (secret: never) => typeof runtime.AnyNull),
+}
+/**
+ * Helper for filtering JSON entries that have `null` on the database (empty on the db)
+ *
+ * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
+ */
+export const DbNull = runtime.DbNull
+
+/**
+ * Helper for filtering JSON entries that have JSON `null` values (not empty on the db)
+ *
+ * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
+ */
+export const JsonNull = runtime.JsonNull
+
+/**
+ * Helper for filtering JSON entries that are `Prisma.DbNull` or `Prisma.JsonNull`
+ *
+ * @see https://www.prisma.io/docs/concepts/components/prisma-client/working-with-fields/working-with-json-fields#filtering-on-a-json-field
+ */
+export const AnyNull = runtime.AnyNull
+
+
+export const ModelName = {
+
+} as const
+
+export type ModelName = (typeof ModelName)[keyof typeof ModelName]
+
+/*
+ * Enums
+ */
+
+export const TransactionIsolationLevel = {
+  ReadUncommitted: 'ReadUncommitted',
+  ReadCommitted: 'ReadCommitted',
+  RepeatableRead: 'RepeatableRead',
+  Serializable: 'Serializable'
+} as const
+
+export type TransactionIsolationLevel = (typeof TransactionIsolationLevel)[keyof typeof TransactionIsolationLevel]
+
+
+
+
+src/generated/prisma/models.ts
+========================================
+FILE: src/generated/prisma/models.ts
+========================================
+
+/* !!! This is code generated by Prisma. Do not edit directly. !!! */
+/* eslint-disable */
+// biome-ignore-all lint: generated file
+// @ts-nocheck 
+/*
+ * This is a barrel export file for all models and their related types.
+ *
+ * ğŸŸ¢ You can import this file directly.
+ */
+export type * from './commonInputTypes'
+
+
+src/lib/auth.ts
+========================================
+FILE: src/lib/auth.ts
+========================================
+// src/lib/auth.ts
+import bcryptjs from "bcryptjs";
+import jwt from "jsonwebtoken";
+
+const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret-change-in-prod";
+
+export const hashPassword = async (password: string): Promise<string> => {
+  return bcryptjs.hash(password, 10);
+};
+
+export const comparePassword = async (
+  password: string,
+  hashed: string
+): Promise<boolean> => {
+  return bcryptjs.compare(password, hashed);
+};
+
+// Updated to accept full payload object
+export const signToken = (payload: { userId: string; role: string; schoolId?: string | null }) => {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: "30d" });
+};
+
+export const verifyToken = (token: string) => {
+  try {
+    return jwt.verify(token, JWT_SECRET) as { userId: string; role: string; schoolId?: string | null };
+  } catch {
+    return null;
+  }
+};
+
+
+src/lib/prisma.ts
+========================================
+FILE: src/lib/prisma.ts
+========================================
+// src/lib/prisma.ts
+import 'dotenv/config';
+import { PrismaClient } from '@prisma/client';
+import { PrismaNeon } from '@prisma/adapter-neon';
+
+const connectionString = process.env.DATABASE_URL!;
+
+const adapter = new PrismaNeon({ connectionString });
+
+// Global singleton to prevent multiple PrismaClient instances in dev
+declare global {
+  // eslint-disable-next-line no-var
+  var prisma: PrismaClient | undefined;
+}
+
+export const prisma =
+  global.prisma ||
+  new PrismaClient({
+    adapter,
+  });
+
+if (process.env.NODE_ENV !== 'production') {
+  global.prisma = prisma;
+}
+
+
+src/middleware.ts
+========================================
+FILE: src/middleware.ts
+========================================
+// middleware.ts
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
+
+function getRoleFromToken(request: NextRequest): string {
+  const token = request.cookies.get("auth-token")?.value;
+
+  if (!token) return "GUEST";
+
+  try {
+    const payloadBase64 = token.split(".")[1];
+    const payloadJson = Buffer.from(payloadBase64, "base64url").toString();
+    const payload = JSON.parse(payloadJson);
+    return payload.role || "GUEST";
+  } catch {
+    return "GUEST";
+  }
+}
+
+export function middleware(request: NextRequest) {
+  const pathname = request.nextUrl.pathname;
+  const role = getRoleFromToken(request);
+
+  const protectedPaths = ["/admin", "/rep", "/school", "/student", "/ecochamp/school", "/ecochamp/student"];
+  const isProtected = protectedPaths.some((p) => pathname.startsWith(p));
+
+  // ONLY protect dashboards from guests
+  if (role === "GUEST" && isProtected) {
+    return NextResponse.redirect(new URL("/", request.url));
+  }
+
+  // Allow everything else (including logged-in users on public pages)
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
+};
+
+

@@ -12,7 +12,7 @@ export default function ScrapItemForm() {
   async function handleSubmit(formData: FormData) {
     setLoading(true);
 
-    const res = await fetch("/api/scrap-item", {
+    const res = await fetch("/api/scrap-items/create", {
       method: "POST",
       body: formData,
     });

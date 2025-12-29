@@ -1,31 +1,46 @@
-// src/app/api/scrap-item/route.ts
-import { NextRequest, NextResponse } from "next/server";
+// src/app/api/scrap-items/route.ts
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 
-export async function POST(req: NextRequest) {
+/**
+ * PUBLIC API
+ * Purpose:
+ * - Used by Sell Scrap
+ * - Used by Donate Scrap
+ *
+ * Rules:
+ * - Only ACTIVE items
+ * - JSON-safe (Decimal → number)
+ * - Stable shape
+ * - NO auth
+ * - NO admin logic
+ */
+export async function GET() {
   try {
-    const formData = await req.formData();
-
-    const name = formData.get("name") as string;
-    const unit = formData.get("unit") as "KG" | "PIECE";
-    const basePrice = parseFloat(formData.get("basePrice") as string);
-
-    if (!name || !unit || isNaN(basePrice)) {
-      return NextResponse.json({ error: "Missing or invalid fields" }, { status: 400 });
-    }
-
-    const item = await prisma.scrapItem.create({
-      data: {
-        name,
-        unit,
-        basePrice,
-        active: true,
+    const items = await prisma.scrapItem.findMany({
+      where: { active: true },
+      orderBy: { name: "asc" },
+      select: {
+        id: true,
+        name: true,
+        unit: true,
+        basePrice: true,
       },
     });
 
-    return NextResponse.json({ success: true, item });
+    const safeItems = items.map((item) => ({
+      id: item.id,
+      name: item.name,
+      unit: item.unit,
+      basePrice: Number(item.basePrice),
+    }));
+
+    return NextResponse.json({ items: safeItems });
   } catch (error) {
-    console.error("Scrap item create error:", error);
-    return NextResponse.json({ error: "Failed to create scrap item" }, { status: 500 });
+    console.error("Public scrap-items GET failed:", error);
+    return NextResponse.json(
+      { error: "Failed to fetch scrap items" },
+      { status: 500 }
+    );
   }
 }

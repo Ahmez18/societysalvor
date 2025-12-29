@@ -15,7 +15,11 @@ export default function NGOForm({ ngo, onSuccess }: Props) {
   async function handleSubmit(formData: FormData) {
     setLoading(true);
 
-    const res = await fetch("/api/ngo/register", {  // ← Correct route
+    // Prevent null description
+    const description = formData.get("description") as string;
+    if (!description) formData.set("description", "No description provided");
+
+    const res = await fetch("/api/ngo/register", {  // Correct route
       method: "POST",
       body: formData,
     });
@@ -33,14 +37,13 @@ export default function NGOForm({ ngo, onSuccess }: Props) {
 
   return (
     <form action={handleSubmit} className="space-y-6">
-      {/* Your form fields here — same as before */}
-      {/* Example fields */}
       <input name="name" placeholder="NGO Name" required className="w-full px-4 py-3 border rounded-lg" />
       <textarea name="description" placeholder="Description" rows={4} required className="w-full px-4 py-3 border rounded-lg" />
       <input name="logo" placeholder="Logo URL (optional)" className="w-full px-4 py-3 border rounded-lg" />
       <input name="website" placeholder="Website (optional)" className="w-full px-4 py-3 border rounded-lg" />
       <input name="registrationNumber" placeholder="Registration Number" required className="w-full px-4 py-3 border rounded-lg" />
       <select name="type" required className="w-full px-4 py-3 border rounded-lg">
+        <option value="">Select Type</option>
         <option value="TRUST">Trust</option>
         <option value="SOCIETY">Society</option>
         <option value="FOUNDATION">Foundation</option>

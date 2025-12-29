@@ -1,151 +1,117 @@
 // src/components/SellScrapForm.tsx
 "use client";
 
-import { useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { toast } from "react-toastify";
-
-type ScrapItem = {
-  id: string;
-  name: string;
-  unit: "KG" | "PIECE";
-  basePrice: number;
-};
-
-type Event = {
-  id: string;
-  name: string;
-  school: { name: string };
-};
+import { useEffect, useRef, useState } from "react";
 
 type Props = {
-  items: ScrapItem[];
-  ongoingEvents: Event[];
+  onSelectionChange: (hasSelection: boolean) => void;
+  onScheduleClick: () => void;
+  formRef: React.RefObject<HTMLDivElement | null>;
 };
 
-export default function SellScrapForm({ items, ongoingEvents }: Props) {
-  const router = useRouter();
-  const searchParams = useSearchParams();
-  const preselectedEventId = searchParams.get("eventId");
-  const [loading, setLoading] = useState(false);
-  const [selectedItems, setSelectedItems] = useState<{ itemId: string; quantity: number }[]>([]);
+export default function SellScrapForm({
+  onSelectionChange,
+  onScheduleClick,
+  formRef,
+}: Props) {
+  const [selectedItems, setSelectedItems] = useState<Record<string, number>>({});
+  const [formVisible, setFormVisible] = useState(false);
+  const observerRef = useRef<IntersectionObserver | null>(null);
 
-  const handleQuantityChange = (itemId: string, qty: string) => {
-    const quantity = parseFloat(qty) || 0;
-    if (quantity === 0) {
-      setSelectedItems(selectedItems.filter((i) => i.itemId !== itemId));
-    } else {
-      setSelectedItems((prev) => {
-        const existing = prev.find((i) => i.itemId === itemId);
-        if (existing) {
-          return prev.map((i) => (i.itemId === itemId ? { ...i, quantity } : i));
-        }
-        return [...prev, { itemId, quantity }];
-      });
-    }
+  const items = [
+    { id: "paper", name: "Paper" },
+    { id: "plastic", name: "Plastic" },
+    { id: "metal", name: "Metal" },
+    { id: "ewaste", name: "E-waste" },
+  ];
+
+  const updateQuantity = (id: string, qty: number) => {
+    const next = { ...selectedItems };
+    if (qty <= 0) delete next[id];
+    else next[id] = qty;
+
+    setSelectedItems(next);
+    onSelectionChange(Object.keys(next).length > 0);
   };
 
-  async function handleSubmit(formData: FormData) {
-    if (selectedItems.length === 0) {
-      toast.error("Please select at least one item");
-      return;
-    }
+  // Observe form visibility
+  useEffect(() => {
+    if (!formRef.current) return;
 
-    setLoading(true);
+    observerRef.current = new IntersectionObserver(
+      ([entry]) => setFormVisible(entry.isIntersecting),
+      { threshold: 0.25 }
+    );
 
-    selectedItems.forEach((si, index) => {
-      formData.append(`items[${index}][itemId]`, si.itemId);
-      formData.append(`items[${index}][quantity]`, si.quantity.toString());
-    });
-
-    const res = await fetch("/api/orders/sell", {
-      method: "POST",
-      body: formData,
-    });
-
-    const data = await res.json();
-
-    if (data.success) {
-      toast.success("Order submitted successfully!");
-      router.push(`/sell/success?trackingId=${data.publicId}`);
-    } else {
-      toast.error(data.error || "Submission failed");
-      setLoading(false);
-    }
-  }
+    observerRef.current.observe(formRef.current);
+    return () => observerRef.current?.disconnect();
+  }, [formRef]);
 
   return (
-    <form action={handleSubmit} className="space-y-8">
-      {/* Optional Event Selection */}
-      {ongoingEvents.length > 0 && (
-        <div className="bg-blue-50 rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-4">Join EcoChamp Event (Optional)</h2>
-          <select
-            name="eventId"
-            defaultValue={preselectedEventId || ""}
-            className="w-full px-4 py-3 border rounded-lg"
+    <div className="max-w-7xl mx-auto px-6 pb-28">
+      {/* ITEM SELECTION */}
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {items.map((item) => (
+          <div
+            key={item.id}
+            className="border border-gray-200 rounded-lg p-6 bg-white"
           >
-            <option value="">Regular Sell (No Event)</option>
-            {ongoingEvents.map((event) => (
-              <option key={event.id} value={event.id}>
-                {event.name} ({event.school.name})
-              </option>
-            ))}
-          </select>
-        </div>
-      )}
-
-      {/* Items Selection */}
-      <div className="bg-white rounded-lg shadow-lg p-6">
-        <h2 className="text-2xl font-semibold mb-6">Select Scrap Items</h2>
-        <div className="space-y-4">
-          {items.map((item) => (
-            <div key={item.id} className="border rounded-lg p-4">
-              <div className="flex justify-between items-center mb-2">
-                <div>
-                  <h3 className="font-medium text-lg">{item.name}</h3>
-                  <p className="text-sm text-gray-600">
-                    ₹{item.basePrice} per {item.unit === "KG" ? "kg" : "piece"}
-                  </p>
-                </div>
-              </div>
+            <div className="flex justify-between items-center">
+              <span className="font-medium text-gray-900">{item.name}</span>
               <input
                 type="number"
-                min="0"
-                step={item.unit === "KG" ? "0.5" : "1"}
-                placeholder={`Estimated ${item.unit === "KG" ? "kg" : "pieces"}`}
-                className="w-full px-4 py-3 border rounded-lg text-lg"
-                onChange={(e) => handleQuantityChange(item.id, e.target.value)}
+                min={0}
+                className="w-20 border border-gray-300 rounded px-2 py-1 text-sm"
+                onChange={(e) =>
+                  updateQuantity(item.id, Number(e.target.value))
+                }
               />
             </div>
-          ))}
-        </div>
-      </div>
+          </div>
+        ))}
+      </section>
 
-      {/* Pickup Details */}
-      <div className="bg-white rounded-lg shadow-lg p-6">
-        <h2 className="text-2xl font-semibold mb-6">Pickup Details</h2>
-        <div className="space-y-4">
-          <input name="contactName" type="text" placeholder="Full Name" required className="w-full px-4 py-3 border rounded-lg" />
-          <input name="contactPhone" type="tel" placeholder="Phone Number" required className="w-full px-4 py-3 border rounded-lg" />
-          <textarea name="pickupAddress" placeholder="Full Pickup Address (with landmark)" rows={4} required className="w-full px-4 py-3 border rounded-lg" />
+      {/* SCHEDULE FORM */}
+      <div ref={formRef} className="mt-24">
+        <h2 className="text-2xl font-semibold text-gray-900">
+          Schedule Pickup
+        </h2>
+        <p className="mt-2 text-gray-600">
+          Pickup date, time, and address are confirmed after review.
+        </p>
+
+        <form className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-4">
+          <input placeholder="Full Name" className="input" />
+          <input placeholder="Phone Number" className="input" />
+
+          <input placeholder="Pickup Date" type="date" className="input" />
+          <select className="input">
+            <option>Select Time Slot</option>
+            <option>Morning (9am – 12pm)</option>
+            <option>Afternoon (12pm – 4pm)</option>
+            <option>Evening (4pm – 7pm)</option>
+          </select>
+
           <input
-            name="pickupDate"
-            type="date"
-            min={new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString().split("T")[0]}
-            required
-            className="w-full px-4 py-3 border rounded-lg"
+            placeholder="Address Line"
+            className="input md:col-span-2"
           />
-        </div>
-      </div>
+          <input placeholder="Landmark (optional)" className="input" />
+          <input placeholder="Pincode" className="input" />
 
-      <button
-        type="submit"
-        disabled={loading || selectedItems.length === 0}
-        className="w-full bg-green-600 text-white py-5 rounded-lg text-xl font-semibold hover:bg-green-700 disabled:bg-gray-400 disabled:cursor-not-allowed"
-      >
-        {loading ? "Submitting..." : "Schedule Free Pickup"}
-      </button>
-    </form>
+          <textarea
+            placeholder="Additional notes (optional)"
+            className="input md:col-span-2 h-24"
+          />
+
+          <button
+            type="submit"
+            className="md:col-span-2 mt-4 rounded-md bg-gray-900 text-white px-6 py-3 text-sm hover:bg-gray-800 transition"
+          >
+            Schedule Pickup
+          </button>
+        </form>
+      </div>
+    </div>
   );
 }
